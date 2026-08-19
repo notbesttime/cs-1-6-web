@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Counter-Strike 1.6 · de_dust2（网页版）</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;
+  font-family:"Lucida Console","Consolas","Microsoft YaHei",monospace;
+  color:#e8e2cf;user-select:none;-webkit-user-select:none;cursor:crosshair;}
+canvas#gl{position:absolute;inset:0;display:block;}
+.hidden{display:none !important;}
+
+/* ---------------- HUD ---------------- */
+#hud{position:absolute;inset:0;pointer-events:none;font-size:14px;}
+
+/* 准星 */
+#crosshair{position:absolute;left:50%;top:50%;width:0;height:0;--gap:5px;}
+#crosshair i{position:absolute;background:#33ff33;box-shadow:0 0 2px rgba(0,0,0,.9);}
+#crosshair .v{width:2px;height:9px;left:-1px;}
+#crosshair .h{height:2px;width:9px;top:-1px;}
+#crosshair .t{bottom:calc(var(--gap));}
+#crosshair .b{top:calc(var(--gap));}
+#crosshair .l{right:calc(var(--gap));}
+#crosshair .r{left:calc(var(--gap));}
+
+#hitmarker{position:absolute;left:50%;top:50%;width:30px;height:30px;margin:-15px 0 0 -15px;
+  opacity:0;transition:opacity .08s;}
+#hitmarker i{position:absolute;background:#fff;box-shadow:0 0 3px #000;}
+#hitmarker .a,#hitmarker .b{width:2px;height:9px;left:14px;}
+#hitmarker .a{top:0}#hitmarker .b{bottom:0}
+#hitmarker .c,#hitmarker .d{height:2px;width:9px;top:14px;}
+#hitmarker .c{left:0}#hitmarker .d{right:0}
+
+/* 左下：血量护甲 */
+#botleft{position:absolute;left:26px;bottom:22px;display:flex;gap:26px;align-items:flex-end;
+  text-shadow:0 0 6px #000;}
+.stat{display:flex;align-items:center;gap:8px;color:#ffb400;}
+.stat .ico{font-size:20px;opacity:.95;}
+.stat .num{font-size:34px;font-weight:bold;letter-spacing:1px;line-height:1;}
+#armorwrap{color:#5ea8ff;}
+#moneywrap{color:#8fdc6a;}
+#moneywrap .num{font-size:26px;}
+#moneypop{position:absolute;left:28px;bottom:74px;color:#8fdc6a;font-size:15px;
+  text-shadow:0 0 6px #000;opacity:0;transition:opacity .3s;}
+#kititems{position:absolute;left:28px;bottom:96px;font-size:13px;color:#d8cfb8;
+  text-shadow:0 0 6px #000;}
+#buyhint{position:absolute;left:50%;bottom:96px;transform:translateX(-50%);
+  font-size:13px;color:#ffd27a;text-shadow:0 0 6px #000;}
+
+/* 闪光弹白屏 */
+#flashblind{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;}
+
+/* 购买菜单 */
+#buymenu{position:absolute;left:40px;top:50%;transform:translateY(-50%);width:360px;
+  background:rgba(6,10,14,.93);border:1px solid rgba(255,210,120,.45);
+  padding:12px 14px;pointer-events:auto;box-shadow:0 0 40px rgba(0,0,0,.7);}
+#buyTitle{font-size:15px;color:#ffd27a;letter-spacing:1px;border-bottom:1px solid rgba(255,255,255,.18);
+  padding-bottom:7px;margin-bottom:7px;overflow:hidden;}
+.buyrow{display:flex;align-items:center;gap:10px;padding:5px 7px;cursor:pointer;font-size:14px;}
+.buyrow:hover{background:rgba(255,200,100,.16);}
+.buyrow b{display:inline-block;width:18px;text-align:center;color:#1a1206;background:#ffc861;
+  font-size:12px;border-radius:2px;font-weight:bold;}
+.buyrow .nm{flex:1;color:#e8dfc0;}
+.buyrow .nm i{font-style:normal;font-size:11px;color:#8fdc6a;}
+.buyrow .pr{color:#8fdc6a;font-size:13px;}
+.buyrow.poor .nm,.buyrow.poor .pr{color:#7a7365;}
+.buyrow.poor b{background:#5b5344;color:#22201c;}
+#buyFoot{margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.14);
+  font-size:11.5px;color:#9a927e;}
+
+/* 右下：弹药 */
+#botright{position:absolute;right:28px;bottom:22px;text-align:right;color:#ffb400;
+  text-shadow:0 0 6px #000;}
+#ammoline{font-size:34px;font-weight:bold;line-height:1;}
+#ammoRes{font-size:18px;opacity:.85;}
+#wname{font-size:15px;color:#e8dfc0;margin-top:4px;letter-spacing:1px;}
+
+/* 顶部：比分与时间 */
+#top{position:absolute;left:50%;top:14px;transform:translateX(-50%);
+  display:flex;align-items:center;gap:18px;background:rgba(8,12,16,.55);
+  border:1px solid rgba(255,255,255,.14);padding:7px 18px;text-shadow:0 0 5px #000;}
+#top .side{display:flex;align-items:center;gap:7px;font-size:17px;font-weight:bold;}
+#top .ct{color:#6fa8ff;}#top .tt{color:#ffb44a;}
+#top .alive{font-size:12px;opacity:.8;font-weight:normal;}
+#roundTime{font-size:22px;font-weight:bold;min-width:74px;text-align:center;color:#fff;}
+
+/* 雷达 */
+#radarwrap{position:absolute;left:18px;top:16px;width:190px;height:190px;}
+#radar{width:190px;height:190px;border-radius:50%;
+  border:2px solid rgba(180,200,220,.35);box-shadow:0 0 14px rgba(0,0,0,.6) inset;}
+#locname{position:absolute;left:0;top:196px;font-size:13px;color:#cfe2ff;
+  text-shadow:0 0 5px #000;letter-spacing:1px;}
+
+/* 击杀信息 */
+#killfeed{position:absolute;right:18px;top:14px;display:flex;flex-direction:column;
+  gap:4px;align-items:flex-end;}
+.kfrow{background:rgba(8,12,16,.6);border:1px solid rgba(255,255,255,.12);
+  padding:3px 9px;font-size:13px;transition:opacity .4s;display:flex;gap:8px;}
+.kfrow .k.tt,.kfrow .v.tt{color:#ffb44a;}
+.kfrow .k.ct,.kfrow .v.ct{color:#6fa8ff;}
+.kfrow .me{text-decoration:underline;font-weight:bold;}
+.kfrow .w{color:#cfc7ad;opacity:.9;}
+
+/* 中央横幅 */
+#banner{position:absolute;left:50%;top:22%;transform:translateX(-50%);
+  font-size:26px;font-weight:bold;letter-spacing:2px;text-shadow:0 0 10px #000;
+  transition:opacity .35s;white-space:nowrap;}
+
+/* 炸弹 HUD */
+#bombhud{position:absolute;left:50%;top:64px;transform:translateX(-50%);
+  color:#ff5a3c;font-size:16px;font-weight:bold;text-shadow:0 0 8px #000;
+  background:rgba(20,4,2,.5);border:1px solid rgba(255,90,60,.4);padding:4px 14px;}
+#bombtime{font-size:20px;}
+
+/* 进度条（安放/拆除） */
+#progressWrap{position:absolute;left:50%;bottom:26%;transform:translateX(-50%);
+  width:280px;text-align:center;}
+#progressLabel{font-size:14px;margin-bottom:5px;color:#ffe08a;text-shadow:0 0 6px #000;}
+#progressBar{height:12px;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.3);}
+#progress{height:100%;width:0;background:linear-gradient(90deg,#ffb400,#ffe98a);}
+
+/* 受伤 */
+#flash{position:absolute;inset:0;background:radial-gradient(ellipse at center,
+  rgba(180,0,0,0) 35%,rgba(170,0,0,.9) 100%);opacity:0;transition:opacity .18s;}
+#dmgdir{position:absolute;left:50%;top:50%;width:0;height:0;}
+.dmgarrow{position:absolute;left:-9px;top:-108px;width:18px;height:26px;
+  background:linear-gradient(180deg,rgba(255,60,40,.95),rgba(255,60,40,0));
+  clip-path:polygon(50% 0,100% 100%,0 100%);transform-origin:9px 108px;
+  transition:opacity .35s;}
+
+/* AWP 镜 */
+#scope{position:absolute;inset:0;background:radial-gradient(circle at center,
+  rgba(0,0,0,0) 27%,rgba(0,0,0,.98) 29%);}
+#scope i{position:absolute;background:#000;}
+#scope .vv{left:50%;top:0;bottom:0;width:2px;margin-left:-1px;}
+#scope .hh{top:50%;left:0;right:0;height:2px;margin-top:-1px;}
+
+#deadmsg{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);
+  font-size:24px;color:#ff7a6a;text-shadow:0 0 10px #000;text-align:center;}
+#deadmsg small{display:block;font-size:14px;color:#d8cfb8;margin-top:8px;opacity:.85;}
+
+/* ---------------- 计分板 ---------------- */
+#scoreboard{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  background:rgba(6,10,14,.92);border:1px solid rgba(255,255,255,.2);
+  padding:16px 22px;min-width:520px;}
+#scoreboard h3{font-size:15px;margin-bottom:10px;color:#ffd27a;letter-spacing:2px;}
+#scoreboard table{width:100%;border-collapse:collapse;font-size:14px;}
+#scoreboard td,#scoreboard th{padding:4px 8px;text-align:left;}
+#scoreboard th{font-size:13px;letter-spacing:1px;border-bottom:1px solid rgba(255,255,255,.22);}
+#scoreboard td:not(:first-child),#scoreboard th:not(:first-child){text-align:center;width:56px;}
+#scoreboard tr.tt td:first-child,#scoreboard tr.hdr:nth-of-type(n) th{}
+#scoreboard tr.tt{color:#ffb44a;}#scoreboard tr.ct{color:#6fa8ff;}
+#scoreboard tr.me td{background:rgba(255,255,255,.10);}
+#scoreboard tr.dead td{opacity:.45;}
+#scoreboard tr.gap td{height:10px;}
+#scoreboard i{font-style:normal;font-size:11px;opacity:.6;}
+
+/* ---------------- 菜单 ---------------- */
+.overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(circle at 50% 40%,rgba(30,26,18,.86),rgba(4,6,8,.96));
+  cursor:default;pointer-events:auto;}
+.panel{width:640px;max-height:92vh;overflow:auto;background:rgba(10,14,18,.9);
+  border:1px solid rgba(255,210,120,.32);padding:26px 30px;box-shadow:0 0 50px rgba(0,0,0,.8);}
+.title{font-size:30px;font-weight:bold;letter-spacing:4px;color:#ffc861;text-align:center;}
+.sub{text-align:center;font-size:13px;color:#a9a292;margin:6px 0 20px;letter-spacing:2px;}
+.row{margin:12px 0;display:flex;align-items:center;gap:12px;font-size:14px;}
+.row .lab{width:112px;color:#cfc6ad;flex:none;}
+.optrow{display:flex;gap:8px;flex-wrap:wrap;}
+button{font-family:inherit;font-size:13px;padding:7px 15px;color:#ddd6c2;cursor:pointer;
+  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.2);transition:.12s;}
+button:hover{background:rgba(255,200,100,.18);border-color:#ffc861;color:#fff;}
+button.sel{background:#ffc861;border-color:#ffe6b0;color:#1a1206;font-weight:bold;}
+.big{width:100%;padding:13px;font-size:17px;letter-spacing:3px;margin-top:20px;
+  background:#ffc861;color:#1a1206;border-color:#ffe6b0;font-weight:bold;}
+input[type=range]{flex:1;accent-color:#ffc861;}
+.val{width:44px;text-align:right;color:#ffd894;}
+.keys{margin-top:18px;border-top:1px solid rgba(255,255,255,.14);padding-top:14px;
+  font-size:12.5px;color:#a7a08e;line-height:1.85;columns:2;}
+.keys b{color:#e6dcc0;font-weight:normal;background:rgba(255,255,255,.08);
+  padding:1px 6px;margin-right:6px;border:1px solid rgba(255,255,255,.12);}
+.note{margin-top:12px;font-size:12px;color:#8d8778;line-height:1.7;}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<pre id="errlog" class="hidden" style="position:absolute;left:8px;bottom:8px;z-index:99;
+  max-width:80vw;color:#ff8a7a;background:rgba(0,0,0,.75);padding:8px;font-size:12px;
+  white-space:pre-wrap;pointer-events:none;"></pre>
+
+<!-- ==================== HUD ==================== -->
+<div id="hud" class="hidden">
+  <div id="crosshair"><i class="v t"></i><i class="v b"></i><i class="h l"></i><i class="h r"></i></div>
+  <div id="hitmarker"><i class="a"></i><i class="b"></i><i class="c"></i><i class="d"></i></div>
+
+  <div id="radarwrap">
+    <canvas id="radar" width="190" height="190"></canvas>
+    <div id="locname"></div>
+  </div>
+
+  <div id="top">
+    <div class="side ct"><span>CT</span><span id="scoreCT">0</span><span class="alive">存活 <span id="aliveCT">0</span></span></div>
+    <div id="roundTime">1:55</div>
+    <div class="side tt"><span class="alive">存活 <span id="aliveT">0</span></span><span id="scoreT">0</span><span>T</span></div>
+  </div>
+
+  <div id="killfeed"></div>
+
+  <div id="botleft">
+    <div class="stat" id="hpwrap"><span class="ico">✚</span><span class="num" id="hp">100</span></div>
+    <div class="stat" id="armorwrap"><span class="ico">◈</span><span class="num" id="armor">0</span></div>
+    <div class="stat" id="moneywrap"><span class="num" id="money">$800</span></div>
+  </div>
+  <div id="moneypop"></div>
+  <div id="kititems"></div>
+  <div id="buyhint" class="hidden">按 [B] 购买</div>
+
+  <div id="botright">
+    <div id="ammoline"><span id="ammoCur">30</span> <span id="ammoRes">/ 90</span></div>
+    <div id="wname">AK-47</div>
+  </div>
+
+  <div id="bombhud" class="hidden">C4 已安放 · <span id="bombtime">40.0</span>s</div>
+
+  <div id="progressWrap" class="hidden">
+    <div id="progressLabel"></div>
+    <div id="progressBar"><div id="progress"></div></div>
+  </div>
+
+  <div id="banner" class="hidden"></div>
+  <div id="flash"></div>
+  <div id="flashblind"></div>
+  <div id="dmgdir"></div>
+  <div id="scope" class="hidden"><i class="vv"></i><i class="hh"></i></div>
+
+  <div id="buymenu" class="hidden">
+    <div id="buyTitle">购买菜单</div>
+    <div id="buyList"></div>
+    <div id="buyFoot"></div>
+  </div>
+
+  <div id="deadmsg" class="hidden">你已阵亡<small>正在观察队友视角…</small></div>
+
+  <div id="scoreboard" class="hidden">
+    <h3>DE_DUST2 · 计分板</h3>
+    <div id="sbBody"></div>
+  </div>
+</div>
+
+<!-- ==================== 主菜单 ==================== -->
+<div id="menu" class="overlay">
+  <div class="panel">
+    <div class="title">COUNTER-STRIKE 1.6</div>
+    <div class="sub">de_dust2 · 与机器人对战 · 网页复刻版</div>
+
+    <div class="row"><div class="lab">选择阵营</div>
+      <div class="optrow" data-key="team">
+        <button data-val="CT">反恐精英 CT（防守）</button>
+        <button data-val="T">恐怖分子 T（进攻）</button>
+      </div></div>
+
+    <div class="row"><div class="lab">机器人难度</div>
+      <div class="optrow" data-key="difficulty">
+        <button data-val="easy">简单</button>
+        <button data-val="normal">普通</button>
+        <button data-val="hard">困难</button>
+        <button data-val="expert">专家</button>
+      </div></div>
+
+    <div class="row"><div class="lab">每队人数</div>
+      <div class="optrow" data-key="teamSize">
+        <button data-val="2">2v2</button>
+        <button data-val="3">3v3</button>
+        <button data-val="4">4v4</button>
+        <button data-val="5">5v5</button>
+      </div></div>
+
+    <div class="row"><div class="lab">获胜回合</div>
+      <div class="optrow" data-key="maxScore">
+        <button data-val="5">5 回合</button>
+        <button data-val="10">10 回合</button>
+        <button data-val="16">16 回合</button>
+      </div></div>
+
+    <div class="row"><div class="lab">左右移动</div>
+      <div class="optrow" data-key="invertStrafe">
+        <button data-val="false">正常（A 左 / D 右）</button>
+        <button data-val="true">反转（A 右 / D 左）</button>
+      </div></div>
+
+    <div class="row"><div class="lab">鼠标灵敏度</div>
+      <input type="range" id="sl_sens" min="0.4" max="6" step="0.1" value="2.2">
+      <div class="val" id="lb_sens">2.2</div></div>
+
+    <div class="row"><div class="lab">视野 FOV</div>
+      <input type="range" id="sl_fov" min="70" max="110" step="1" value="90">
+      <div class="val" id="lb_fov">90</div></div>
+
+    <div class="row"><div class="lab">音量</div>
+      <input type="range" id="sl_vol" min="0" max="1" step="0.05" value="0.7">
+      <div class="val" id="lb_vol">0.70</div></div>
+
+    <button class="big" id="btnOnline" style="background:rgba(70,140,255,.15);border-color:rgba(120,170,255,.5);color:#8fd4ff;margin-top:8px;font-size:15px;">🏓 联机对局（VibeHub）</button>
+    <button class="big" id="btnStart">进 入 战 场</button>
+
+    <div class="keys">
+      <div><b>W A S D</b>移动</div>
+      <div><b>鼠标</b>瞄准</div>
+      <div><b>左键</b>射击 / 投雷</div>
+      <div><b>右键</b>AWP 开镜 / 轻抛手雷</div>
+      <div><b>Shift</b>静步</div>
+      <div><b>Ctrl</b>下蹲</div>
+      <div><b>Space</b>跳跃</div>
+      <div><b>R</b>换弹</div>
+      <div><b>B</b>购买菜单</div>
+      <div><b>1 2 3</b>主武器 / 手枪 / 匕首</div>
+      <div><b>4 5 6</b>高爆 / 闪光 / 烟雾</div>
+      <div><b>Q</b>快速切枪</div>
+      <div><b>E</b>安放 / 拆除 C4</div>
+      <div><b>Tab</b>计分板</div>
+      <div><b>Esc</b>暂停菜单</div>
+      <div><b>滚轮</b>换枪</div>
+    </div>
+    <div class="note">
+      目标：T 方在 A / B 包点安放 C4 并守住 40 秒；CT 方阻止安放或在爆炸前拆除。消灭对方全部成员同样获胜。<br>
+      经济：起始 $800，击杀 / 赢回合 / 安放拆弹都给钱，回合开始 20 秒内在自家出生区按 <b>B</b> 买枪、护甲、拆弹器和手雷。活着过回合会保留装备。<br>
+      开始后点击画面锁定鼠标；按 Esc 释放鼠标。
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 暂停 ==================== -->
+<div id="pause" class="overlay hidden">
+  <div class="panel" style="width:420px;text-align:center;">
+    <div class="title" style="font-size:22px;">已 暂 停</div>
+    <div class="sub">鼠标已释放</div>
+    <button class="big" id="btnResume">继 续 游 戏</button>
+    <button class="big" id="btnQuit" style="background:rgba(255,255,255,.06);color:#ddd6c2;border-color:rgba(255,255,255,.2);">返 回 主 菜 单</button>
+  </div>
+</div>
+
+<!-- ==================== 比赛结束 ==================== -->
+<div id="matchend" class="overlay hidden">
+  <div class="panel" style="width:440px;text-align:center;">
+    <div class="title" id="meTitle">比赛结束</div>
+    <div class="sub" id="meScore">CT 0 : 0 T</div>
+    <div style="font-size:14px;color:#cfc6ad;margin:10px 0 4px;" id="meStat"></div>
+    <button class="big" id="btnAgain">再 来 一 局</button>
+    <button class="big" id="btnMenu2" style="background:rgba(255,255,255,.06);color:#ddd6c2;border-color:rgba(255,255,255,.2);">返 回 主 菜 单</button>
+  </div>
+</div>
+
+<!-- ==================== VibeHub 登录 ==================== -->
+<div id="vibelogin" class="overlay hidden">
+  <div class="panel" style="width:400px;text-align:center;">
+    <div class="title" style="font-size:22px;">🏓 VIBEHUB</div>
+    <div class="sub">登录后即可联机对战</div>
+    <div id="vblStatus" style="font-size:12px;color:#8d8778;margin-bottom:12px;"></div>
+    <div class="row"><div class="lab">用户名</div>
+      <input type="text" id="vblUser" placeholder="请输入用户名" style="flex:1;padding:7px 10px;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.2);color:#e8e2cf;font-family:inherit;font-size:13px;outline:none;"></div>
+    <div class="row"><div class="lab">密码</div>
+      <input type="password" id="vblPass" placeholder="请输入密码" style="flex:1;padding:7px 10px;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.2);color:#e8e2cf;font-family:inherit;font-size:13px;outline:none;"></div>
+    <div id="vblErr" style="font-size:12px;color:#ff8a7a;min-height:18px;margin:4px 0;"></div>
+    <button class="big" id="btnVibeLogin" style="font-size:16px;">登 录</button>
+    <div style="margin-top:12px;font-size:11.5px;color:#8d8778;">
+      使用 VibeHub 账号登录 · 首次使用请先在 vibehub.ai 注册
+    </div>
+  </div>
+</div>
+
+<!-- ==================== VibeHub 大厅 ==================== -->
+<div id="vibelobby" class="overlay hidden">
+  <div class="panel" style="width:620px;">
+    <div class="row" style="justify-content:space-between;align-items:center;">
+      <div>
+        <span class="title" style="font-size:20px;display:inline;">🏓 联机大厅</span>
+        <span id="vblUserBadge" style="margin-left:12px;font-size:13px;color:#8fd4ff;"></span>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button id="btnVibeLogout">退出登录</button>
+        <button id="btnLobbyBack">返回菜单</button>
+      </div>
+    </div>
+    <div style="border-top:1px solid rgba(255,255,255,.12);margin:14px 0;padding-top:14px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+        <button class="big" id="btnCreateRoom" style="width:auto;padding:8px 18px;font-size:13px;margin-top:0;">＋ 创建房间</button>
+        <button class="big" id="btnQuickJoin" style="width:auto;padding:8px 18px;font-size:13px;margin-top:0;background:rgba(70,200,140,.18);border-color:rgba(100,220,160,.45);color:#6fe8a8;">⚡ 快速加入</button>
+        <button id="btnRefreshRooms" style="padding:8px 14px;">🔄 刷新</button>
+        <button id="btnResumeRoom" style="padding:8px 14px;" title="返回上次的房间">↩ 恢复房间</button>
+      </div>
+      <div style="font-size:13px;color:#cfc6ad;margin-bottom:8px;">可用房间：</div>
+      <div id="lobbyRoomList" style="max-height:260px;overflow-y:auto;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.1);padding:4px;"></div>
+      <div id="lobbyCreateRow" class="hidden" style="margin-top:12px;padding:10px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.1);">
+        <div class="row"><div class="lab">房间名称</div>
+          <input type="text" id="crName" placeholder="我的房间" style="flex:1;padding:6px 10px;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.2);color:#e8e2cf;font-family:inherit;font-size:13px;outline:none;"></div>
+        <div class="row"><div class="lab">密码（可选）</div>
+          <input type="password" id="crPass" placeholder="留空为公共房间" style="flex:1;padding:6px 10px;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.2);color:#e8e2cf;font-family:inherit;font-size:13px;outline:none;"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;">
+          <button id="btnCrCancel">取消</button>
+          <button class="big" id="btnCrOk" style="width:auto;padding:8px 18px;font-size:13px;margin-top:0;">创 建</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="three.min.js"></script>
+<script src="https://cdn.vibehub.ai/vibe/latest/vibe.min.js"></script>
+<script>
+/* VibeHub SDK 加载失败时的降级提示 */
+if (typeof VibeHub === 'undefined') {
+  console.warn('[CS1.6] VibeHub SDK 未加载 — 联机功能将不可用');
+}
+</script>
+<script>
+// 运行错误直接显示在页面上，方便排查（正常情况下不会出现）
+window.__errs = [];
+window.addEventListener('error', function (e) {
+  window.__errs.push((e.message || 'error') + ' @ ' + (e.filename || '').split('/').pop() + ':' + e.lineno);
+  var el = document.getElementById('errlog');
+  if (el) { el.classList.remove('hidden'); el.textContent = window.__errs.slice(-6).join('\n'); }
+});
+</script>
+<script src="js/textures.js"></script>
+<script src="js/map.js"></script>
+<script src="js/phys.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/weapons.js"></script>
+<script src="js/buy.js"></script>
+<script src="js/nade.js"></script>
+<script src="js/net.js"></script>
+<script src="js/transport.js"></script>
+<script src="js/vibe.js"></script>
+<script src="js/bots.js"></script>
+<script src="js/game.js"></script>
+<script>
+// ================================================================
+//  VibeHub 大厅前端控制器 —— 把 HTML 和 VIBE 模块粘在一起
+// ================================================================
+var LobbyApp = (function () {
+  var _busy = false;
+
+  function showLogin() {
+    hideAllOverlays();
+    document.getElementById('vibelogin').classList.remove('hidden');
+    updateLoginStatus();
+  }
+
+  function hideLogin() {
+    document.getElementById('vibelogin').classList.add('hidden');
+  }
+
+  function showLobby() {
+    hideAllOverlays();
+    document.getElementById('vibelobby').classList.remove('hidden');
+    var user = VIBE.getUser();
+    document.getElementById('vblUserBadge').textContent = user ? ('👤 ' + user.username) : '';
+    document.getElementById('lobbyCreateRow').classList.add('hidden');
+    VIBE.refreshRooms();
+    renderLobby();
+  }
+
+  function hideLobby() {
+    document.getElementById('vibelobby').classList.add('hidden');
+    document.getElementById('lobbyCreateRow').classList.add('hidden');
+  }
+
+  function hideAllOverlays() {
+    document.getElementById('menu').classList.add('hidden');
+    document.getElementById('pause').classList.add('hidden');
+    document.getElementById('matchend').classList.add('hidden');
+    hideLogin();
+    hideLobby();
+  }
+
+  function showMenu() {
+    hideAllOverlays();
+    document.getElementById('menu').classList.remove('hidden');
+    hideLobby();
+  }
+
+  function updateLoginStatus() {
+    var el = document.getElementById('vblStatus');
+    if (!el) return;
+    if (VIBE.isSDKReady()) {
+      if (VIBE.isLoggedIn()) {
+        el.textContent = '已自动登录: ' + VIBE.getUser().username;
+        el.style.color = '#8fdc6a';
+      } else {
+        el.textContent = '未登录 — 请输入 VibeHub 账号';
+        el.style.color = '#a9a292';
+      }
+    } else {
+      el.textContent = '⚠️ 联机不可用：' + (VIBE.getSDKError() || 'SDK 未加载');
+      el.style.color = '#ff8a7a';
+    }
+  }
+
+  function renderLobby() {
+    var list = document.getElementById('lobbyRoomList');
+    if (!list) return;
+    VIBE.renderRoomList(list);
+  }
+
+  function onJoinResult(result) {
+    if (result && result.ok) {
+      // 成功 → 启动联机对局
+      hideLobby();
+      if (typeof startOnlineMatch === 'function') startOnlineMatch();
+    } else {
+      alert('加入失败: ' + (result ? result.why : '未知错误'));
+    }
+  }
+
+  function init() {
+    // 登录按钮
+    var btnLogin = document.getElementById('btnVibeLogin');
+    if (btnLogin) {
+      btnLogin.addEventListener('click', function () {
+        var u = document.getElementById('vblUser').value.trim();
+        var p = document.getElementById('vblPass').value;
+        var errEl = document.getElementById('vblErr');
+        if (!u) { errEl.textContent = '请输入用户名'; return; }
+        if (!p) { errEl.textContent = '请输入密码'; return; }
+        btnLogin.disabled = true;
+        btnLogin.textContent = '登录中…';
+        var res = VIBE.login(u, p);
+        if (res.ok) {
+          errEl.textContent = '';
+          hideLogin();
+          VIBE.showLobby();
+        } else {
+          errEl.textContent = res.why || '登录失败';
+          btnLogin.disabled = false;
+          btnLogin.textContent = '登 录';
+        }
+      });
+    }
+    // Enter 键快捷登录
+    ['vblUser', 'vblPass'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') document.getElementById('btnVibeLogin').click();
+      });
+    });
+
+    // 大厅按钮：创建房间
+    var btnCr = document.getElementById('btnCreateRoom');
+    if (btnCr) {
+      btnCr.addEventListener('click', function () {
+        var row = document.getElementById('lobbyCreateRow');
+        row.classList.toggle('hidden');
+        if (!row.classList.contains('hidden')) {
+          document.getElementById('crName').value = '';
+          document.getElementById('crPass').value = '';
+          document.getElementById('crName').focus();
+        }
+      });
+    }
+
+    // 大厅按钮：创建确认
+    var btnCrOk = document.getElementById('btnCrOk');
+    if (btnCrOk) {
+      btnCrOk.addEventListener('click', function () {
+        var name = document.getElementById('crName').value.trim() || '未命名房间';
+        var pass = document.getElementById('crPass').value;
+        var res = VIBE.createRoom(name, pass ? { password: pass } : {});
+        if (res.ok) {
+          document.getElementById('lobbyCreateRow').classList.add('hidden');
+          hideLobby();
+          if (typeof startOnlineMatch === 'function') startOnlineMatch();
+        } else {
+          alert('创建失败: ' + res.why);
+        }
+      });
+    }
+
+    // 大厅按钮：创建取消
+    var btnCrCancel = document.getElementById('btnCrCancel');
+    if (btnCrCancel) {
+      btnCrCancel.addEventListener('click', function () {
+        document.getElementById('lobbyCreateRow').classList.add('hidden');
+      });
+    }
+
+    // 快速加入
+    var btnQj = document.getElementById('btnQuickJoin');
+    if (btnQj) {
+      btnQj.addEventListener('click', function () {
+        var res = VIBE.quickJoin();
+        onJoinResult(res);
+      });
+    }
+
+    // 刷新
+    var btnRef = document.getElementById('btnRefreshRooms');
+    if (btnRef) {
+      btnRef.addEventListener('click', function () {
+        _busy = true;
+        setTimeout(function () {
+          VIBE.refreshRooms();
+          renderLobby();
+          _busy = false;
+        }, 300);
+      });
+    }
+
+    // 恢复房间
+    var btnResume = document.getElementById('btnResumeRoom');
+    if (btnResume) {
+      btnResume.addEventListener('click', function () {
+        var res = VIBE.resumeRoom();
+        onJoinResult(res);
+      });
+    }
+
+    // 退出登录
+    var btnLogout = document.getElementById('btnVibeLogout');
+    if (btnLogout) {
+      btnLogout.addEventListener('click', function () {
+        VIBE.logout();
+        hideLobby();
+        showMenu();
+      });
+    }
+
+    // 返回菜单
+    var btnLobbyBack = document.getElementById('btnLobbyBack');
+    if (btnLobbyBack) {
+      btnLobbyBack.addEventListener('click', function () {
+        hideLobby();
+        showMenu();
+      });
+    }
+  }
+
+  return {
+    init: init,
+    showLogin: showLogin,
+    hideLogin: hideLogin,
+    showLobby: showLobby,
+    hideLobby: hideLobby,
+    showMenu: showMenu,
+    hideAllOverlays: hideAllOverlays,
+    updateLoginStatus: updateLoginStatus,
+    renderLobby: renderLobby,
+    onJoinResult: onJoinResult
+  };
+})();
+
+/* ---- 联机按钮 & 初始化 ---- */
+window.addEventListener('DOMContentLoaded', function () {
+  LobbyApp.init();
+  // 尝试初始化 VibeHub SDK（静默失败，登录时再提示）
+  if (typeof VIBE !== 'undefined') { try { VIBE.initSDK(); } catch (e) { /* 静默 */ } }
+  var btnOnline = document.getElementById('btnOnline');
+  if (btnOnline) {
+    btnOnline.addEventListener('click', function () {
+      if (typeof VIBE === 'undefined' || !VIBE.isSDKReady()) {
+        // 第一次点击时重试初始化
+        if (typeof VIBE !== 'undefined') { try { VIBE.initSDK(); } catch (e) { } }
+        if (typeof VIBE === 'undefined' || !VIBE.isSDKReady()) {
+          alert('SDK 未加载，无法联机。\n请检查网络连接后刷新页面重试。');
+          return;
+        }
+      }
+      if (VIBE.isLoggedIn()) {
+        VIBE.showLobby();
+      } else {
+        LobbyApp.showLogin();
+      }
+    });
+  }
+});
+</script>
+</body>
+</html>
