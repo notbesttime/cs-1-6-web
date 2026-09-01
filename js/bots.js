@@ -447,6 +447,31 @@ Bot.prototype.hearGunfire = function (x, z, dist) {
 
 /* ---------- 目标点决策 ---------- */
 Bot.prototype.chooseGoal = function (G) {
+  // 团队竞技：行为分工 —— 约半数压向敌人（push），其余分散游走随机区域（roam）。
+  // 原版全员朝随机敌人推进，敌人也在推进 → 两队全员挤中路对撞。
+  if (G.gameMode === 'teamdm') {
+    if (!this.dmRole || Math.random() < 0.25) this.dmRole = Math.random() < 0.5 ? 'push' : 'roam';
+    this.dmUntil = G.time + 6 + Math.random() * 5;    // 该目标的保质期
+    if (this.dmRole === 'push') {
+      var foes = this.team === 'T' ? G.ctList : G.tList;
+      var alive = [];
+      for (var i = 0; i < foes.length; i++) if (!foes[i].dead) alive.push(foes[i]);
+      if (alive.length) {
+        var e = alive[Math.floor(Math.random() * alive.length)];
+        this.goal = MAP.nearestOpen(e.x + (Math.random() - 0.5) * 260, e.z + (Math.random() - 0.5) * 260);
+      } else {
+        this.goal = MAP.nearestOpen(this.x + (Math.random() - 0.5) * 800, this.z + (Math.random() - 0.5) * 800);
+      }
+      this.goalKind = 'push';
+    } else {
+      // 游走锚点从地图区域里抽（真实房间位置），队伍自然铺满全图各条路线
+      var A = MAP.AREAS.length ? MAP.AREAS[Math.floor(Math.random() * MAP.AREAS.length)] : { cx: this.x, cz: this.z };
+      this.goal = MAP.nearestOpen(A.cx + (Math.random() - 0.5) * 320, A.cz + (Math.random() - 0.5) * 320);
+      this.goalKind = 'roam';
+    }
+    this.path = null;
+    return;
+  }
   var site = G.targetSite;
   if (this.team === 'T') {
     if (G.bombPlanted) {
@@ -512,6 +537,14 @@ Bot.prototype.update = function (dt, G) {
   if ((this.goalKind === 'push' || this.goalKind === 'defend') && G.bombPlanted) this.chooseGoal(G);
   if (this.goalKind === 'plant' && G.bombPlanted) this.chooseGoal(G);
   if (this.goalKind === 'defuse' && !G.bombPlanted) this.chooseGoal(G);
+  // 团队竞技：目标过期或到达就换（原版没有到达判定，会一路怼到底）
+  if (G.gameMode === 'teamdm' && this.goal && this.goalKind !== 'hold') {
+    if (this.dmUntil && t > this.dmUntil) this.goalStale = true;
+    else {
+      var gdx = this.goal[0] - this.x, gdz = this.goal[1] - this.z;
+      if (gdx * gdx + gdz * gdz < 140 * 140) this.goalStale = true;
+    }
+  }
 
   var wishX = 0, wishZ = 0, speedScale = 1;
   var aimX = null, aimY = null, aimZ = null;
@@ -729,8 +762,15 @@ Bot.prototype.updateShooting = function (dt, G) {
     this.reloadEnd = t + w.reloadTime;
     return;
   }
-  // 切回主武器
-  if (!this.target && this.wi !== 0 && this.ammo[this.weapons[0]] > 0) this.wi = 0;
+  // 切回主武器（weapons[0] 可能是刀，要找 slot=primary 的那把）
+  if (!this.target) {
+    var priIdx = -1;
+    for (var _k = 0; _k < this.weapons.length; _k++) {
+      var _wd = WEAPONS.defs[this.weapons[_k]];
+      if (_wd && _wd.slot === 'primary') { priIdx = _k; break; }
+    }
+    if (this.wi !== priIdx && priIdx >= 0 && this.ammo[this.weapons[priIdx]] > 0) this.wi = priIdx;
+  }
 
   if (!this.target || this.target.dead) { this.burst = 0; return; }
   if (this.spotT < this.skill.react || this.spawnGuard > 0) return;
@@ -806,6 +846,7 @@ Bot.prototype.buyPhase = function (opts) {
 
   function price(id) { return WEAPONS.defs[id].price; }
   var self = this;
+  this.bought = [];   // 本回合真实购买记录（回合开场战术语音用）
   function buyGun(id) {
     if (money < price(id)) return false;
     money -= price(id);
@@ -819,6 +860,7 @@ Bot.prototype.buyPhase = function (opts) {
     self.reserve[id] = WEAPONS.defs[id].reserve;
     self.wi = 0;
     hasPrimary = true;
+    self.bought.push(WEAPONS.defs[id].name);
     return true;
   }
 
@@ -830,14 +872,14 @@ Bot.prototype.buyPhase = function (opts) {
     else if (money >= 1500 + 300 && Math.random() < 0.7) buyGun('mp5');
     else if (money >= 1700 && Math.random() < 0.3) buyGun('m3');
   }
-  if (this.armor < 100 && money >= 1000 && Math.random() < 0.8) { this.armor = 100; this.helmet = true; money -= 1000; }
-  else if (this.armor < 100 && money >= 650) { this.armor = 100; money -= 650; }
-  if (mine === 'CT' && !this.defuser && money >= 200 && Math.random() < 0.65) { this.defuser = true; money -= 200; }
+  if (this.armor < 100 && money >= 1000 && Math.random() < 0.8) { this.armor = 100; this.helmet = true; money -= 1000; this.bought.push('防弹衣+头盔'); }
+  else if (this.armor < 100 && money >= 650) { this.armor = 100; money -= 650; this.bought.push('防弹衣'); }
+  if (mine === 'CT' && !this.defuser && money >= 200 && Math.random() < 0.65) { this.defuser = true; money -= 200; this.bought.push('拆弹器'); }
   // 手雷
   this.nades = this.nades || {};
-  if (money >= 300 && !this.nades.he && Math.random() < 0.75) { this.nades.he = 1; money -= 300; }
-  if (money >= 200 && !this.nades.flash && Math.random() < 0.35) { this.nades.flash = 1; money -= 200; }
-  if (money >= 300 && !this.nades.smoke && Math.random() < 0.2) { this.nades.smoke = 1; money -= 300; }
+  if (money >= 300 && !this.nades.he && Math.random() < 0.75) { this.nades.he = 1; money -= 300; this.bought.push('高爆手雷'); }
+  if (money >= 200 && !this.nades.flash && Math.random() < 0.35) { this.nades.flash = 1; money -= 200; this.bought.push('闪光弹'); }
+  if (money >= 300 && !this.nades.smoke && Math.random() < 0.2) { this.nades.smoke = 1; money -= 300; this.bought.push('烟雾弹'); }
   this.money = money;
 };
 

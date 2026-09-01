@@ -123,9 +123,11 @@
     if (!d0) return;
 
     // 出生点安全性（纯逻辑，不依赖渲染）
+    var _sp = (typeof MAP !== 'undefined' && MAP && MAP.SPAWNS) ? MAP.SPAWNS : null;
+    var _totalSpawns = _sp ? ((_sp.T ? _sp.T.length : 0) + (_sp.CT ? _sp.CT.length : 0)) : 0;
     var badSpawns = T.spawnProbeCheck();
     check('出生点经 safeSpawn 后无碰撞（防卡箱子）', badSpawns.length === 0,
-      badSpawns.length === 0 ? '16 个出生点全部通过' : JSON.stringify(badSpawns));
+      badSpawns.length === 0 ? (_totalSpawns + ' 个出生点全部通过') : JSON.stringify(badSpawns));
 
     // 起步阶段不该有 NaN
     check('初始视角无 NaN', isFinite(d0.punchX) && isFinite(d0.punchY) && isFinite(d0.yaw),

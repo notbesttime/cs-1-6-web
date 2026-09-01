@@ -24,6 +24,7 @@ canvas#gl{position:absolute;inset:0;display:block;}
 #crosshair .b{top:calc(var(--gap));}
 #crosshair .l{right:calc(var(--gap));}
 #crosshair .r{left:calc(var(--gap));}
+#crosshair .dot{width:2px;height:2px;left:-1px;top:-1px;border-radius:50%;}
 
 #hitmarker{position:absolute;left:50%;top:50%;width:30px;height:30px;margin:-15px 0 0 -15px;
   opacity:0;transition:opacity .08s;}
@@ -92,6 +93,23 @@ canvas#gl{position:absolute;inset:0;display:block;}
   border:2px solid rgba(180,200,220,.35);box-shadow:0 0 14px rgba(0,0,0,.6) inset;}
 #locname{position:absolute;left:0;top:196px;font-size:13px;color:#cfe2ff;
   text-shadow:0 0 5px #000;letter-spacing:1px;}
+
+/* 放大地图（按 M 或点右上角地图按钮） */
+#bigmap{position:fixed;inset:0;z-index:200;display:none;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.55);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);}
+#bigmap.show{display:flex;}
+#bigmap canvas{border-radius:12px;border:2px solid rgba(180,200,220,.4);
+  box-shadow:0 8px 40px rgba(0,0,0,.6);}
+#bigmap .hint{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);
+  font-size:13px;color:#a9a292;}
+
+/* 战术语音（左侧，雷达下方） */
+#radiofeed{position:absolute;left:18px;top:232px;display:flex;flex-direction:column;gap:4px;
+  font-size:12.5px;max-width:300px;pointer-events:none;}
+.rrow{background:rgba(8,12,16,.55);border-left:2px solid rgba(140,220,140,.5);
+  padding:3px 9px;color:#d8cfb8;text-shadow:0 0 4px #000;transition:opacity .6s;}
+.rrow .rn{font-weight:bold;}
+body.mobile #radiofeed{top:128px;font-size:11px;max-width:64vw;}
 
 /* 击杀信息 */
 #killfeed{position:absolute;right:18px;top:14px;display:flex;flex-direction:column;
@@ -181,17 +199,162 @@ input[type=range]{flex:1;accent-color:#ffc861;}
 .keys b{color:#e6dcc0;font-weight:normal;background:rgba(255,255,255,.08);
   padding:1px 6px;margin-right:6px;border:1px solid rgba(255,255,255,.12);}
 .note{margin-top:12px;font-size:12px;color:#8d8778;line-height:1.7;}
+
+/* ======================== 手机触控 ======================== */
+body.mobile{-webkit-tap-highlight-color:transparent;}
+body.mobile #hud{pointer-events:none;}
+body.mobile canvas#gl{cursor:none;touch-action:none;}
+
+/* 移动端雷达缩小，避免遮挡视野 */
+body.mobile #radarwrap{width:104px;height:104px;left:8px;top:8px;}
+body.mobile #radar{width:104px;height:104px;}
+body.mobile #locname{top:106px;font-size:10px;}
+body.mobile #top{font-size:13px;padding:4px 10px;gap:10px;top:6px;}
+body.mobile #top .side{font-size:14px;}
+body.mobile #roundTime{font-size:17px;min-width:56px;}
+
+/* 移动端菜单可竖向滚动（游戏画布仍锁定） */
+body.mobile .overlay{align-items:flex-start;justify-content:center;overflow-y:auto;
+  -webkit-overflow-scrolling:touch;touch-action:pan-y;padding:10px 0;}
+body.mobile .panel{width:94vw;max-height:none;padding:16px 18px;}
+body.mobile .keys{display:none;}   /* 键盘说明表在手机上无意义 */
+body.mobile .big{padding:15px;font-size:16px;}
+
+/* 触控层：仅游戏进行中显示；菜单/设置 overlay 永远盖在其上 */
+#touchUI{display:none;position:fixed;inset:0;z-index:40;pointer-events:none;}
+body.mobile.in-game #touchUI{display:block;}
+body.touch-hidden #touchUI{display:none !important;}
+.overlay{z-index:100;}
+.touch-ctrl{position:absolute;transform-origin:center center;}
+.tbtn{position:absolute;transform-origin:center center;pointer-events:auto;touch-action:none;
+  border:2px solid rgba(255,255,255,.32);background:rgba(20,30,50,.5);color:rgba(255,255,255,.75);
+  border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;
+  -webkit-tap-highlight-color:transparent;transition:background .08s,border-color .08s;}
+.tbtn:active,.tbtn.on{background:rgba(60,130,220,.65);border-color:rgba(140,200,255,.95);}
+
+/* 开火按钮 — 枪形简笔画 */
+#btnFire{width:74px;height:74px;background:rgba(180,50,50,.42);border-color:rgba(255,100,80,.55);}
+#btnFire i{display:block;width:22px;height:32px;background:rgba(255,255,255,.82);border-radius:3px 3px 1px 1px;position:relative;}
+#btnFire i::after{content:'';position:absolute;top:-6px;left:50%;transform:translateX(-50%);width:10px;height:8px;background:rgba(255,255,255,.62);border-radius:2px 2px 0 0;}
+#btnFire:active,#btnFire.on{background:rgba(220,60,60,.72);}
+/* 左侧开火 — 半透明，供左手辅助射击 */
+#btnFireLeft{width:60px;height:60px;background:rgba(180,50,50,.28);border-color:rgba(255,100,80,.4);}
+#btnFireLeft i{display:block;width:18px;height:26px;background:rgba(255,255,255,.7);border-radius:3px 3px 1px 1px;position:relative;}
+#btnFireLeft i::after{content:'';position:absolute;top:-5px;left:50%;transform:translateX(-50%);width:8px;height:7px;background:rgba(255,255,255,.5);border-radius:2px 2px 0 0;}
+#btnFireLeft:active,#btnFireLeft.on{background:rgba(220,60,60,.6);}
+
+/* 瞄准按钮 — 十字准星（仅持狙时显示） */
+#btnAim{width:52px;height:52px;display:none;}
+body.mobile.scope-avail #btnAim{display:flex;}
+#btnAim i.aim-icon{width:20px;height:20px;border:2px solid rgba(255,255,255,.75);border-radius:50%;position:relative;}
+#btnAim i.aim-icon::before,#btnAim i.aim-icon::after{content:'';position:absolute;background:rgba(255,255,255,.75);}
+#btnAim i.aim-icon::before{width:2px;height:100%;left:50%;transform:translateX(-50%);}
+#btnAim i.aim-icon::after{height:2px;width:100%;top:50%;transform:translateY(-50%);}
+
+/* 功能键统一尺寸 */
+#btnJump,#btnCrouch,#btnReload,#btnGrenade,#btnMelee,#btnPlant{width:50px;height:50px;}
+#btnJump i.jump-icon{font-size:22px;color:rgba(255,255,255,.78);line-height:1;font-style:normal;}
+#btnCrouch i.crouch-icon{font-size:15px;color:rgba(255,255,255,.78);font-weight:bold;font-style:normal;}
+#btnReload i.reload-icon{font-size:22px;color:rgba(255,255,255,.78);line-height:1;font-style:normal;}
+
+/* 投弹 — 手雷简笔画 */
+#btnGrenade i.grenade-icon{width:15px;height:21px;border:2px solid rgba(255,255,255,.75);border-radius:3px 3px 6px 6px;position:relative;display:block;}
+#btnGrenade i.grenade-icon::before{content:'';position:absolute;top:-5px;left:50%;transform:translateX(-50%);width:8px;height:6px;border:2px solid rgba(255,255,255,.55);border-bottom:none;border-radius:3px 3px 0 0;}
+
+/* 近战 — 刺刀简笔画 */
+#btnMelee i.melee-icon{width:4px;height:24px;background:rgba(255,255,255,.75);border-radius:1px;transform:rotate(35deg);position:relative;display:block;}
+#btnMelee i.melee-icon::after{content:'';position:absolute;bottom:0;left:-6px;width:15px;height:6px;background:rgba(180,160,120,.75);border-radius:2px;}
+
+/* 安放/拆除 & 购买 */
+#btnPlant i.plant-icon{font-size:16px;color:rgba(255,200,60,.95);font-weight:bold;font-style:normal;}
+#btnBuy{width:46px;height:46px;}
+#btnBuy i.buy-icon{font-size:18px;color:rgba(130,220,100,.95);font-weight:bold;font-style:normal;}
+
+/* 设置按钮 */
+#btnSettings{width:40px;height:40px;font-size:19px;}
+.settings-icon{font-style:normal;}
+
+/* 地图按钮 */
+#btnMap{width:40px;height:40px;font-size:18px;}
+#btnMap i.map-icon{font-style:normal;}
+
+/* 武器栏（底部横排，不参与自定义定位） */
+#weaponSlots{display:flex;gap:8px;justify-content:center;pointer-events:none;}
+.wsbtn{position:relative !important;left:auto !important;top:auto !important;transform:none !important;
+  width:42px;height:42px;font-size:14px;pointer-events:auto;}
+.wsbtn span{pointer-events:none;}
+
+/* 移动摇杆 — 关键：pointer-events:auto 才能收到触摸 */
+#stickMove{position:absolute;width:130px;height:130px;pointer-events:auto;touch-action:none;}
+.stick-base{width:100%;height:100%;border:2px solid rgba(255,255,255,.22);background:rgba(255,255,255,.06);border-radius:50%;position:relative;pointer-events:none;}
+.stick-knob{width:52px;height:52px;background:rgba(255,255,255,.22);border:2px solid rgba(255,255,255,.4);border-radius:50%;position:absolute;top:50%;left:50%;margin-top:-26px;margin-left:-26px;transition:transform .04s linear;pointer-events:none;}
+
+/* 视角区域（右半屏） — 直接 auto */
+#lookPad{position:absolute;right:0;top:0;width:50%;height:100%;touch-action:none;pointer-events:auto;background:transparent;}
+
+/* ======================== 设置面板（移出 touchUI，独立最高层） ======================== */
+.touch-settings{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(92vw,400px);max-height:86vh;background:rgba(10,14,20,.97);border:1px solid rgba(255,210,120,.3);border-radius:12px;z-index:250;overflow:hidden;color:#e8e2cf;font-size:13px;font-family:inherit;pointer-events:auto;display:flex;flex-direction:column;}
+.touch-settings.hidden{display:none;}
+.ts-header{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,.12);font-size:16px;color:#ffc861;font-weight:bold;letter-spacing:1px;flex:none;}
+#tsClose{font-size:24px;cursor:pointer;color:#a9a292;line-height:1;padding:0 6px;}
+#tsClose:active{color:#fff;}
+.ts-tabs{display:flex;border-bottom:1px solid rgba(255,255,255,.1);flex:none;}
+.ts-tab{flex:1;padding:11px;text-align:center;background:none;border:none;color:#8d8778;font-size:13px;cursor:pointer;border-bottom:2px solid transparent;font-family:inherit;}
+.ts-tab.sel{color:#ffc861;border-bottom-color:#ffc861;}
+.ts-body{padding:12px 16px;overflow-y:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y;flex:1;}
+.ts-panel.hidden{display:none;}
+.ts-row{display:flex;align-items:center;gap:10px;margin:12px 0;font-size:13px;}
+.ts-row label{width:78px;color:#cfc6ad;flex:none;}
+.ts-row input[type=range]{flex:1;accent-color:#ffc861;height:26px;}
+.ts-row select{flex:1;padding:8px;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.2);color:#e8e2cf;font-family:inherit;font-size:13px;border-radius:4px;}
+.ts-val{width:46px;text-align:right;color:#ffd894;font-size:12px;}
+.ts-switch{position:relative;display:inline-block;width:48px;height:28px;flex-shrink:0;}
+.ts-switch input{opacity:0;width:0;height:0;}
+.ts-switch span{position:absolute;cursor:pointer;inset:0;background:rgba(255,255,255,.15);border-radius:14px;transition:.2s;}
+.ts-switch span::before{content:'';position:absolute;height:22px;width:22px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s;}
+.ts-switch input:checked+span{background:rgba(80,160,80,.6);}
+.ts-switch input:checked+span::before{transform:translateX(20px);}
+.ts-action{font-family:inherit;font-size:13px;padding:9px 16px;color:#ddd6c2;cursor:pointer;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);border-radius:5px;touch-action:manipulation;}
+.ts-action:active{background:rgba(255,200,100,.25);border-color:#ffc861;}
+
+/* 全屏布局编辑：高亮可拖按钮 + 顶部工具条 */
+body.touch-layout-editing #touchUI{display:block;background:rgba(0,0,0,.35);}
+body.touch-layout-editing .tbtn,body.touch-layout-editing #stickMove{outline:2px dashed rgba(140,190,255,.8);}
+body.touch-layout-editing #lookPad{display:none;}
+.tbtn.editing-target{opacity:.95;}
+.tbtn.editing-sel,#stickMove.editing-sel{outline:2px solid #fff !important;box-shadow:0 0 14px rgba(120,180,255,.8);}
+#editToolbar{position:fixed;top:0;left:0;right:0;z-index:260;display:flex;align-items:center;gap:8px;
+  padding:8px 14px;background:rgba(8,12,18,.92);border-bottom:1px solid rgba(255,210,120,.3);}
+#editToolbar .et-hint{flex:1;font-size:13px;color:#ffd894;}
+#editToolbar .ts-action{font-size:13px;padding:8px 16px;}
+
+/* 横屏提示 */
+#rotatePrompt{display:none;position:fixed;inset:0;z-index:300;background:rgba(6,10,14,.98);
+  flex-direction:column;align-items:center;justify-content:center;color:#e8e2cf;text-align:center;}
+#rotatePrompt .phone{width:70px;height:110px;border:3px solid #ffc861;border-radius:10px;
+  position:relative;animation:rotateHint 1.8s ease-in-out infinite;margin-bottom:24px;}
+#rotatePrompt .phone::before{content:'';position:absolute;left:50%;bottom:6px;transform:translateX(-50%);
+  width:20px;height:3px;background:#ffc861;border-radius:2px;}
+#rotatePrompt .txt{font-size:17px;letter-spacing:1px;color:#ffc861;}
+#rotatePrompt .sub{font-size:13px;color:#a9a292;margin-top:8px;}
+@keyframes rotateHint{0%,40%{transform:rotate(0);}60%,100%{transform:rotate(-90deg);}}
 </style>
 </head>
 <body>
 <canvas id="gl"></canvas>
+<!-- 横屏提示（仅移动端竖屏时显示） -->
+<div id="rotatePrompt">
+  <div class="phone"></div>
+  <div class="txt">请横屏游玩</div>
+  <div class="sub">旋转设备以获得最佳体验</div>
+</div>
 <pre id="errlog" class="hidden" style="position:absolute;left:8px;bottom:8px;z-index:99;
   max-width:80vw;color:#ff8a7a;background:rgba(0,0,0,.75);padding:8px;font-size:12px;
   white-space:pre-wrap;pointer-events:none;"></pre>
 
 <!-- ==================== HUD ==================== -->
 <div id="hud" class="hidden">
-  <div id="crosshair"><i class="v t"></i><i class="v b"></i><i class="h l"></i><i class="h r"></i></div>
+  <div id="crosshair"><i class="v t"></i><i class="v b"></i><i class="h l"></i><i class="h r"></i><i class="dot"></i></div>
   <div id="hitmarker"><i class="a"></i><i class="b"></i><i class="c"></i><i class="d"></i></div>
 
   <div id="radarwrap">
@@ -206,8 +369,13 @@ input[type=range]{flex:1;accent-color:#ffc861;}
   </div>
 
   <div id="killfeed"></div>
+  <div id="radiofeed"></div>
 
   <div id="botleft">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+      <span id="playerNameDisplay" style="font-size:14px;color:#e8dfc0;text-shadow:0 0 6px #000;letter-spacing:1px;"></span>
+      <button id="btnRename" style="font-size:11px;padding:2px 8px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);color:#a9a292;cursor:pointer;display:none;" title="改名">✎</button>
+    </div>
     <div class="stat" id="hpwrap"><span class="ico">✚</span><span class="num" id="hp">100</span></div>
     <div class="stat" id="armorwrap"><span class="ico">◈</span><span class="num" id="armor">0</span></div>
     <div class="stat" id="moneywrap"><span class="num" id="money">$800</span></div>
@@ -222,6 +390,9 @@ input[type=range]{flex:1;accent-color:#ffc861;}
   </div>
 
   <div id="bombhud" class="hidden">C4 已安放 · <span id="bombtime">40.0</span>s</div>
+
+  <!-- 放大地图：点击/按 M 关闭 -->
+  <div id="bigmap"><canvas id="bigmapCanvas" width="600" height="600"></canvas><div class="hint">点击任意处关闭 · 按 M 切换</div></div>
 
   <div id="progressWrap" class="hidden">
     <div id="progressLabel"></div>
@@ -272,8 +443,10 @@ input[type=range]{flex:1;accent-color:#ffc861;}
       <div class="optrow" data-key="teamSize">
         <button data-val="2">2v2</button>
         <button data-val="3">3v3</button>
-        <button data-val="4">4v4</button>
+        <button data-val="4" class="sel">4v4</button>
         <button data-val="5">5v5</button>
+        <button data-val="8">8v8</button>
+        <button data-val="10">10v10</button>
       </div></div>
 
     <div class="row"><div class="lab">获胜回合</div>
@@ -289,8 +462,38 @@ input[type=range]{flex:1;accent-color:#ffc861;}
         <button data-val="true">反转（A 右 / D 左）</button>
       </div></div>
 
+    <div class="row"><div class="lab">游戏模式</div>
+      <div class="optrow" data-key="gameMode">
+        <button data-val="bomb">爆破模式</button>
+        <button data-val="teamdm">团队竞技</button>
+      </div></div>
+
+    <div class="row"><div class="lab">选择地图</div>
+      <div class="optrow" data-key="map">
+        <button data-val="dust2">de_dust2</button>
+        <button data-val="warehouse">仓库</button>
+      </div></div>
+
+    <div class="row" id="rowLives" style="display:none;"><div class="lab">团队竞技目标</div>
+      <div class="optrow" data-key="lives">
+        <button data-val="20">20 杀</button>
+        <button data-val="30">30 杀</button>
+        <button data-val="40">40 杀</button>
+        <button data-val="50">50 杀</button>
+        <button data-val="60">60 杀</button>
+      </div></div>
+
+    <div class="row" id="rowLoadout" style="display:none;"><div class="lab">团队竞技主武器</div>
+      <div class="optrow" data-key="loadout">
+        <button data-val="ak47">AK-47</button>
+        <button data-val="m4a1">M4A1</button>
+        <button data-val="awp">AWP</button>
+        <button data-val="mp5">MP5</button>
+        <button data-val="m3">M3</button>
+      </div></div>
+
     <div class="row"><div class="lab">鼠标灵敏度</div>
-      <input type="range" id="sl_sens" min="0.4" max="6" step="0.1" value="2.2">
+      <input type="range" id="sl_sens" min="0.4" max="12" step="0.1" value="2.2">
       <div class="val" id="lb_sens">2.2</div></div>
 
     <div class="row"><div class="lab">视野 FOV</div>
@@ -322,10 +525,14 @@ input[type=range]{flex:1;accent-color:#ffc861;}
       <div><b>Esc</b>暂停菜单</div>
       <div><b>滚轮</b>换枪</div>
     </div>
-    <div class="note">
+    <div class="note" id="menuNote">
       目标：T 方在 A / B 包点安放 C4 并守住 40 秒；CT 方阻止安放或在爆炸前拆除。消灭对方全部成员同样获胜。<br>
       经济：起始 $800，击杀 / 赢回合 / 安放拆弹都给钱，回合开始 20 秒内在自家出生区按 <b>B</b> 买枪、护甲、拆弹器和手雷。活着过回合会保留装备。<br>
       开始后点击画面锁定鼠标；按 Esc 释放鼠标。
+    </div>
+    <div class="note hidden" id="menuNoteTeam">
+      团队竞技：不可购买 C4 / 拆弹器 / 手雷，死亡 3 秒后自动满甲头盔复活并保留所选主武器 + 手枪 + 匕首。<br>
+      以队伍击杀数先达到目标者获胜；可按 <b>Tab</b> 查看计分板。
     </div>
   </div>
 </div>
@@ -357,14 +564,10 @@ input[type=range]{flex:1;accent-color:#ffc861;}
     <div class="title" style="font-size:22px;">🏓 VIBEHUB</div>
     <div class="sub">登录后即可联机对战</div>
     <div id="vblStatus" style="font-size:12px;color:#8d8778;margin-bottom:12px;"></div>
-    <div class="row"><div class="lab">用户名</div>
-      <input type="text" id="vblUser" placeholder="请输入用户名" style="flex:1;padding:7px 10px;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.2);color:#e8e2cf;font-family:inherit;font-size:13px;outline:none;"></div>
-    <div class="row"><div class="lab">密码</div>
-      <input type="password" id="vblPass" placeholder="请输入密码" style="flex:1;padding:7px 10px;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.2);color:#e8e2cf;font-family:inherit;font-size:13px;outline:none;"></div>
     <div id="vblErr" style="font-size:12px;color:#ff8a7a;min-height:18px;margin:4px 0;"></div>
-    <button class="big" id="btnVibeLogin" style="font-size:16px;">登 录</button>
+    <button class="big" id="btnVibeLogin" style="font-size:16px;">登 录 VIBEHUB</button>
     <div style="margin-top:12px;font-size:11.5px;color:#8d8778;">
-      使用 VibeHub 账号登录 · 首次使用请先在 vibehub.ai 注册
+      点击后将弹出 VibeHub 授权窗口
     </div>
   </div>
 </div>
@@ -391,14 +594,53 @@ input[type=range]{flex:1;accent-color:#ffc861;}
       </div>
       <div style="font-size:13px;color:#cfc6ad;margin-bottom:8px;">可用房间：</div>
       <div id="lobbyRoomList" style="max-height:260px;overflow-y:auto;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.1);padding:4px;"></div>
-      <div id="lobbyCreateRow" class="hidden" style="margin-top:12px;padding:10px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.1);">
+      <div id="lobbyCreateRow" class="hidden" style="margin-top:12px;padding:12px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.1);">
         <div class="row"><div class="lab">房间名称</div>
-          <input type="text" id="crName" placeholder="我的房间" style="flex:1;padding:6px 10px;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.2);color:#e8e2cf;font-family:inherit;font-size:13px;outline:none;"></div>
+          <input type="text" id="crName" placeholder="我的房间" maxlength="20" style="flex:1;padding:6px 10px;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.2);color:#e8e2cf;font-family:inherit;font-size:13px;outline:none;"></div>
+        <div class="row"><div class="lab">地图</div>
+          <div class="optrow" id="crMap">
+            <button data-val="dust2">de_dust2</button>
+            <button data-val="warehouse">仓库</button>
+          </div></div>
+        <div class="row"><div class="lab">模式</div>
+          <div class="optrow" id="crMode">
+            <button data-val="bomb">爆破模式</button>
+            <button data-val="teamdm">团队竞技</button>
+          </div></div>
+        <div class="row"><div class="lab">你的阵营</div>
+          <div class="optrow" id="crTeam">
+            <button data-val="CT">CT 反恐精英</button>
+            <button data-val="T">T 恐怖分子</button>
+          </div></div>
+        <div class="row"><div class="lab">每队真人数</div>
+          <div class="optrow" id="crSize">
+            <button data-val="1">1v1</button>
+            <button data-val="2">2v2</button>
+            <button data-val="3">3v3</button>
+            <button data-val="4">4v4</button>
+          </div></div>
+        <div class="row"><div class="lab">每队总人数</div>
+          <div class="optrow" id="crTotal">
+            <button data-val="2">2v2</button>
+            <button data-val="3">3v3</button>
+            <button data-val="4">4v4</button>
+            <button data-val="5">5v5</button>
+            <button data-val="6">6v6</button>
+            <button data-val="7">7v7</button>
+            <button data-val="8">8v8</button>
+            <button data-val="9">9v9</button>
+            <button data-val="10">10v10</button>
+          </div></div>
+        <div class="row" style="font-size:11px;color:#8d8778;margin-top:-6px;">
+          <div class="lab"></div>
+          <div>真人数 = 真实玩家上限（每队）；不足总人数的部分由人机补齐</div></div>
+        <div class="row"><div class="lab" id="crWinLab">胜利条件</div>
+          <div class="optrow" id="crWin"></div></div>
         <div class="row"><div class="lab">密码（可选）</div>
           <input type="password" id="crPass" placeholder="留空为公共房间" style="flex:1;padding:6px 10px;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.2);color:#e8e2cf;font-family:inherit;font-size:13px;outline:none;"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;">
           <button id="btnCrCancel">取消</button>
-          <button class="big" id="btnCrOk" style="width:auto;padding:8px 18px;font-size:13px;margin-top:0;">创 建</button>
+          <button class="big" id="btnCrOk" style="width:auto;padding:8px 18px;font-size:13px;margin-top:0;">创 建 房 间</button>
         </div>
       </div>
     </div>
@@ -406,11 +648,11 @@ input[type=range]{flex:1;accent-color:#ffc861;}
 </div>
 
 <script src="three.min.js"></script>
-<script src="https://cdn.vibehub.ai/vibe/latest/vibe.min.js"></script>
+<!-- VibeHub SDK v3：平台托管的稳定通道 -->
+<script src="https://vibe.lumigrav.space/sdk/v3/vibehub.js"></script>
 <script>
-/* VibeHub SDK 加载失败时的降级提示 */
 if (typeof VibeHub === 'undefined') {
-  console.warn('[CS1.6] VibeHub SDK 未加载 — 联机功能将不可用');
+  console.warn('[CS1.6] VibeHub SDK 加载失败 — 联机功能不可用');
 }
 </script>
 <script>
@@ -422,18 +664,24 @@ window.addEventListener('error', function (e) {
   if (el) { el.classList.remove('hidden'); el.textContent = window.__errs.slice(-6).join('\n'); }
 });
 </script>
-<script src="js/textures.js"></script>
-<script src="js/map.js"></script>
-<script src="js/phys.js"></script>
-<script src="js/audio.js"></script>
-<script src="js/weapons.js"></script>
-<script src="js/buy.js"></script>
-<script src="js/nade.js"></script>
-<script src="js/net.js"></script>
-<script src="js/transport.js"></script>
-<script src="js/vibe.js"></script>
-<script src="js/bots.js"></script>
-<script src="js/game.js"></script>
+<script src="js/textures.js?v=20260829b"></script>
+<script src="js/map.js?v=20260829b"></script>
+<script src="js/map2.js?v=20260829b"></script>
+<script src="js/maps.js?v=20260829b"></script>
+<script src="js/phys.js?v=20260829b"></script>
+<script src="js/audio.js?v=20260829b"></script>
+<script src="js/weapons.js?v=20260829b"></script>
+<script src="js/buy.js?v=20260829b"></script>
+<script src="js/nade.js?v=20260829b"></script>
+<script src="js/net.js?v=20260829b"></script>
+<script src="js/transport.js?v=20260829b"></script>
+<script src="js/vibe.js?v=20260829b"></script>
+<script src="js/bots.js?v=20260829b"></script>
+<script src="js/game.js?v=20260829b"></script>
+<script src="js/touch.js?v=20260829b"></script>
+<script>
+if (typeof TOUCH !== 'undefined') TOUCH.detect();
+</script>
 <script>
 // ================================================================
 //  VibeHub 大厅前端控制器 —— 把 HTML 和 VIBE 模块粘在一起
@@ -455,10 +703,10 @@ var LobbyApp = (function () {
     hideAllOverlays();
     document.getElementById('vibelobby').classList.remove('hidden');
     var user = VIBE.getUser();
-    document.getElementById('vblUserBadge').textContent = user ? ('👤 ' + user.username) : '';
+    document.getElementById('vblUserBadge').textContent = user ? ('👤 ' + (user.name || user.username || '')) : '';
     document.getElementById('lobbyCreateRow').classList.add('hidden');
-    VIBE.refreshRooms();
-    renderLobby();
+    renderLobby();                       // 先渲染占位，列表异步到了再刷新
+    VIBE.refreshRooms().then(renderLobby);
   }
 
   function hideLobby() {
@@ -503,11 +751,43 @@ var LobbyApp = (function () {
     VIBE.renderRoomList(list);
   }
 
+  /* ---- 创建房间表单辅助 ---- */
+  function selGroup(groupId, val) {
+    var g = document.getElementById(groupId);
+    if (!g) return;
+    var hit = false;
+    g.querySelectorAll('button').forEach(function (b) {
+      var on = b.dataset.val === String(val);
+      b.classList.toggle('sel', on);
+      if (on) hit = true;
+    });
+    if (!hit && g.querySelector('button')) g.querySelector('button').classList.add('sel');
+  }
+  function selVal(groupId, fallback) {
+    var g = document.getElementById(groupId);
+    if (!g) return fallback;
+    var sel = g.querySelector('button.sel');
+    return sel ? sel.dataset.val : fallback;
+  }
+  function fillWinRow(mode) {
+    var g = document.getElementById('crWin');
+    var lab = document.getElementById('crWinLab');
+    if (!g) return;
+    var opts = mode === 'teamdm'
+      ? [['20', '20 杀'], ['30', '30 杀'], ['40', '40 杀'], ['50', '50 杀'], ['60', '60 杀']]
+      : [['5', '5 回合'], ['10', '10 回合'], ['16', '16 回合']];
+    lab.textContent = mode === 'teamdm' ? '目标击杀数' : '胜利条件';
+    g.innerHTML = opts.map(function (o) {
+      return '<button data-val="' + o[0] + '">' + o[1] + '</button>';
+    }).join('');
+    selGroup('crWin', opts[Math.floor(opts.length / 2)][0]);
+  }
+
   function onJoinResult(result) {
     if (result && result.ok) {
-      // 成功 → 启动联机对局
+      // 成功 → 启动联机对局（startOnlineMatch 在 game.js 的 IIFE 内，须走 GAME 导出）
       hideLobby();
-      if (typeof startOnlineMatch === 'function') startOnlineMatch();
+      enterOnlineMatch();
     } else {
       alert('加入失败: ' + (result ? result.why : '未知错误'));
     }
@@ -518,23 +798,19 @@ var LobbyApp = (function () {
     var btnLogin = document.getElementById('btnVibeLogin');
     if (btnLogin) {
       btnLogin.addEventListener('click', function () {
-        var u = document.getElementById('vblUser').value.trim();
-        var p = document.getElementById('vblPass').value;
         var errEl = document.getElementById('vblErr');
-        if (!u) { errEl.textContent = '请输入用户名'; return; }
-        if (!p) { errEl.textContent = '请输入密码'; return; }
         btnLogin.disabled = true;
         btnLogin.textContent = '登录中…';
-        var res = VIBE.login(u, p);
-        if (res.ok) {
+        // v3 SDK login() 不需要参数，弹窗授权
+        VIBE.login().then(function (user) {
           errEl.textContent = '';
           hideLogin();
-          VIBE.showLobby();
-        } else {
-          errEl.textContent = res.why || '登录失败';
+          LobbyApp.showLobby();
+        }).catch(function (err) {
+          errEl.textContent = (err && err.message) || '登录失败';
           btnLogin.disabled = false;
           btnLogin.textContent = '登 录';
-        }
+        });
       });
     }
     // Enter 键快捷登录
@@ -545,34 +821,89 @@ var LobbyApp = (function () {
       });
     });
 
-    // 大厅按钮：创建房间
+    // 大厅按钮：创建房间（展开表单并填充默认值）
     var btnCr = document.getElementById('btnCreateRoom');
     if (btnCr) {
       btnCr.addEventListener('click', function () {
         var row = document.getElementById('lobbyCreateRow');
         row.classList.toggle('hidden');
         if (!row.classList.contains('hidden')) {
-          document.getElementById('crName').value = '';
+          document.getElementById('crName').value = (VIBE.getUser() ? VIBE.getUser().name : '') + '的房间';
           document.getElementById('crPass').value = '';
+          fillWinRow('bomb');
+          selGroup('crMap', (window.GAME && GAME.SET.map) || 'dust2');
+          selGroup('crMode', (window.GAME && GAME.SET.gameMode) || 'bomb');
+          selGroup('crTeam', (window.GAME && GAME.SET.team) || 'CT');
+          selGroup('crSize', (window.GAME && GAME.SET.playerSize) || 2);
+          selGroup('crTotal', (window.GAME && GAME.SET.teamSize) || 4);
+          selGroup('crWin', (window.GAME && GAME.SET.gameMode) === 'teamdm' ? (GAME.SET.lives || 20) : (GAME.SET.maxScore || 16));
           document.getElementById('crName').focus();
         }
       });
     }
 
-    // 大厅按钮：创建确认
+    // 表单内：模式切换 → 胜利条件行联动；地图/模式等分组点选
+    ['crMap', 'crMode', 'crTeam', 'crSize', 'crTotal', 'crWin'].forEach(function (gid) {
+      var g = document.getElementById(gid);
+      if (!g) return;
+      g.addEventListener('click', function (e) {
+        var b = e.target.closest('button');
+        if (!b) return;
+        g.querySelectorAll('button').forEach(function (x) { x.classList.remove('sel'); });
+        b.classList.add('sel');
+        if (gid === 'crMode') fillWinRow(b.dataset.val);
+        if (gid === 'crSize') {
+          // 真人数不能超过总人数
+          var pv = parseInt(b.dataset.val, 10);
+          var tv = parseInt(selVal('crTotal', '2'), 10);
+          if (tv < pv) selGroup('crTotal', pv);
+        }
+        if (gid === 'crTotal') {
+          var tv2 = parseInt(b.dataset.val, 10);
+          var pv2 = parseInt(selVal('crSize', '1'), 10);
+          if (pv2 > tv2) selGroup('crSize', tv2);
+        }
+      });
+    });
+
+    // 大厅按钮：创建确认（收集表单 → 应用本机设置 → 带设置建房）
     var btnCrOk = document.getElementById('btnCrOk');
     if (btnCrOk) {
       btnCrOk.addEventListener('click', function () {
         var name = document.getElementById('crName').value.trim() || '未命名房间';
         var pass = document.getElementById('crPass').value;
-        var res = VIBE.createRoom(name, pass ? { password: pass } : {});
-        if (res.ok) {
-          document.getElementById('lobbyCreateRow').classList.add('hidden');
-          hideLobby();
-          if (typeof startOnlineMatch === 'function') startOnlineMatch();
-        } else {
-          alert('创建失败: ' + res.why);
+        var map = selVal('crMap', 'dust2');
+        var mode = selVal('crMode', 'bomb');
+        var team = selVal('crTeam', 'CT');
+        var psize = parseInt(selVal('crSize', '2'), 10) || 2;   // 每队真人数
+        var tsize = parseInt(selVal('crTotal', '4'), 10) || 4;  // 每队总人数（含人机）
+        var win = parseInt(selVal('crWin', mode === 'teamdm' ? '20' : '16'), 10);
+        if (tsize < psize) tsize = psize;
+        // 房主本机按房间设置开局
+        if (window.GAME && GAME.SET) {
+          GAME.SET.map = map;
+          GAME.SET.gameMode = mode;
+          GAME.SET.team = team;
+          GAME.SET.playerSize = psize;
+          GAME.SET.teamSize = tsize;
+          if (mode === 'teamdm') GAME.SET.lives = win; else GAME.SET.maxScore = win;
+          if (GAME.touch) GAME.touch.saveSettings();
         }
+        var res = VIBE.createRoom(name, {
+          password: pass || null,
+          map: map, gameMode: mode, teamSize: tsize, playerSize: psize,
+          win: win, hostTeam: team,
+          maxPlayers: psize * 2
+        });
+        Promise.resolve(res).then(function (r) {
+          if (r && r.ok) {
+            document.getElementById('lobbyCreateRow').classList.add('hidden');
+            hideLobby();
+            enterOnlineMatch();
+          } else {
+            alert('创建失败: ' + (r ? r.why : '未知错误'));
+          }
+        });
       });
     }
 
@@ -588,8 +919,7 @@ var LobbyApp = (function () {
     var btnQj = document.getElementById('btnQuickJoin');
     if (btnQj) {
       btnQj.addEventListener('click', function () {
-        var res = VIBE.quickJoin();
-        onJoinResult(res);
+        onJoinResult(VIBE.quickJoin());
       });
     }
 
@@ -598,11 +928,10 @@ var LobbyApp = (function () {
     if (btnRef) {
       btnRef.addEventListener('click', function () {
         _busy = true;
-        setTimeout(function () {
-          VIBE.refreshRooms();
+        VIBE.refreshRooms().then(function () {
           renderLobby();
           _busy = false;
-        }, 300);
+        });
       });
     }
 
@@ -610,8 +939,7 @@ var LobbyApp = (function () {
     var btnResume = document.getElementById('btnResumeRoom');
     if (btnResume) {
       btnResume.addEventListener('click', function () {
-        var res = VIBE.resumeRoom();
-        onJoinResult(res);
+        onJoinResult(VIBE.resumeRoom());
       });
     }
 
@@ -650,23 +978,56 @@ var LobbyApp = (function () {
 })();
 
 /* ---- 联机按钮 & 初始化 ---- */
+/* 从大厅进入联机对局：startOnlineMatch 定义在 game.js 的 IIFE 内，
+ * 必须通过 GAME 导出对象调用，裸的 startOnlineMatch 全局上不存在 */
+function enterOnlineMatch() {
+  if (window.GAME && typeof GAME.startOnlineMatch === 'function') GAME.startOnlineMatch();
+  else if (typeof startOnlineMatch === 'function') startOnlineMatch();
+}
+
+// 平台异步注入 VibeHub（iframe 中延迟加载），需要轮询等到两个都可用
+function waitForSDK(cb, attempts) {
+  attempts = attempts || 0;
+  // VIBE = 我们的模块（script 同步加载），VibeHub = 平台注入的 SDK（异步加载）
+  var vibeReady = typeof VIBE !== 'undefined' && typeof VIBE.initSDK === 'function';
+  var sdkReady  = typeof VibeHub !== 'undefined';
+  if (vibeReady && sdkReady) {
+    VIBE.initSDK().then(function () {
+      if (cb) cb(true);
+    }).catch(function () {
+      if (cb) cb(false);
+    });
+    return;
+  }
+  if (attempts > 30) { if (cb) cb(false); return; }  // 15 秒超时
+  setTimeout(function () { waitForSDK(cb, attempts + 1); }, 500);
+}
+
 window.addEventListener('DOMContentLoaded', function () {
   LobbyApp.init();
-  // 尝试初始化 VibeHub SDK（静默失败，登录时再提示）
-  if (typeof VIBE !== 'undefined') { try { VIBE.initSDK(); } catch (e) { /* 静默 */ } }
+  waitForSDK(function (ok) {
+    if (!ok) console.warn('[CS1.6] VibeHub SDK 未在 15 秒内加载');
+  });
   var btnOnline = document.getElementById('btnOnline');
   if (btnOnline) {
     btnOnline.addEventListener('click', function () {
       if (typeof VIBE === 'undefined' || !VIBE.isSDKReady()) {
-        // 第一次点击时重试初始化
-        if (typeof VIBE !== 'undefined') { try { VIBE.initSDK(); } catch (e) { } }
-        if (typeof VIBE === 'undefined' || !VIBE.isSDKReady()) {
-          alert('SDK 未加载，无法联机。\n请检查网络连接后刷新页面重试。');
-          return;
-        }
+        // 用户点了联机按钮，给 SDK 最后一次加载机会
+        waitForSDK(function (ok) {
+          if (!ok) {
+            alert('SDK 未加载，无法联机。\n请检查网络连接后刷新页面重试。');
+            return;
+          }
+          if (VIBE.isLoggedIn()) {
+            LobbyApp.showLobby();
+          } else {
+            LobbyApp.showLogin();
+          }
+        });
+        return;
       }
       if (VIBE.isLoggedIn()) {
-        VIBE.showLobby();
+        LobbyApp.showLobby();
       } else {
         LobbyApp.showLogin();
       }

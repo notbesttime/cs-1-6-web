@@ -1,0 +1,7 @@
+.zcode/
+.workbuddy/
+.vibehub/
+cs1.6_dist/
+*.exe
+_desc.txt
+_note.txt

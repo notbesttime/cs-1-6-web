@@ -280,6 +280,58 @@ var TEX = (function () {
     return c;
   }
 
+  /* ---------- 水泥地面（仓库地图用） ---------- */
+  function concreteFloor(size) {
+    var c = makeCanvas(size), x = c.getContext('2d');
+    x.fillStyle = '#8a8a85';
+    x.fillRect(0, 0, size, size);
+    // 伸缩缝
+    var js = size / 4;
+    x.strokeStyle = 'rgba(55,55,52,.50)';
+    x.lineWidth = 2;
+    for (var i = 0; i <= 4; i++) {
+      x.beginPath(); x.moveTo(i * js, 0); x.lineTo(i * js, size); x.stroke();
+      x.beginPath(); x.moveTo(0, i * js); x.lineTo(size, i * js); x.stroke();
+    }
+    blotches(x, size, 20, '95,95,90', size * 0.02, size * 0.12, 0.15);
+    blotches(x, size, 10, '115,114,108', size * 0.03, size * 0.08, 0.10);
+    grain(x, size, 28);
+    return c;
+  }
+
+  /* ---------- 波纹铁皮墙（仓库地图用） ---------- */
+  function corrugatedIron(size) {
+    var c = makeCanvas(size), x = c.getContext('2d');
+    x.fillStyle = '#55585c';
+    x.fillRect(0, 0, size, size);
+    // 波纹
+    for (var i = 0; i < size; i += 18) {
+      x.fillStyle = 'rgba(255,255,255,.05)'; x.fillRect(i, 0, 7, size);
+      x.fillStyle = 'rgba(0,0,0,.10)'; x.fillRect(i + 9, 0, 7, size);
+    }
+    // 锈迹
+    blotches(x, size, 16, '120,62,26', size * 0.012, size * 0.07, 0.30);
+    // 铆钉
+    x.fillStyle = 'rgba(32,34,38,.70)';
+    for (var j = 0; j < 4; j++) for (var k = 0; k < 4; k++)
+      { x.beginPath(); x.arc(25 + k * 62, 25 + j * 62, 3.5, 0, 6.2832); x.fill(); }
+    grain(x, size, 20);
+    return c;
+  }
+
+  /* ---------- 锈蚀钢板（装卸车车身等） ---------- */
+  function rustPlate(size) {
+    var c = makeCanvas(size), x = c.getContext('2d');
+    x.fillStyle = '#6b6560';
+    x.fillRect(0, 0, size, size);
+    blotches(x, size, 30, '120,58,24', size * 0.015, size * 0.12, 0.40);
+    blotches(x, size, 14, '85,82,76', size * 0.02, size * 0.09, 0.18);
+    x.strokeStyle = 'rgba(20,18,16,.35)'; x.lineWidth = 2;
+    x.strokeRect(3, 3, size - 6, size - 6);
+    grain(x, size, 22);
+    return c;
+  }
+
   /* ============ 对外接口：一次性生成全部贴图 ============ */
   var built = null;
   function build() {
@@ -298,7 +350,11 @@ var TEX = (function () {
       blood: toTexture(softDot('150,10,10'), 0, false),
       spark: toTexture(softDot('255,210,120'), 0, false),
       flash: toTexture(muzzleFlash(), 0, false),
-      c4: toTexture(c4Tex(), 0, false)
+      c4: toTexture(c4Tex(), 0, false),
+      /* 仓库地图专用纹理 */
+      concrete: toTexture(concreteFloor(256), 1),
+      ironWall: toTexture(corrugatedIron(256), 1),
+      rustPlate: toTexture(rustPlate(256), 1)
     };
     built.sky.wrapS = built.sky.wrapT = THREE.ClampToEdgeWrapping;
     return built;

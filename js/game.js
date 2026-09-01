@@ -9,8 +9,34 @@ var GAME = (function () {
   var SET = {
     sens: 2.2, fov: 90, volume: 0.7, difficulty: 'normal',
     teamSize: 4, team: 'CT', maxScore: 16, roundTime: 115, bombTime: 40,
-    invertStrafe: false
+    invertStrafe: false,
+    // ---- 团队竞技模式新增 ----
+    gameMode: 'bomb',          // 'bomb' | 'teamdm'
+    map: 'dust2',              // 'dust2' | 'warehouse'
+    lives: 20,                 // 团队竞技：队伍击杀目标（20~60）
+    loadout: 'ak47',           // 团队竞技：默认主武器
+    playerSize: 2              // 联机：每队真人数上限（房间创建时设置）
   };
+
+  /* ---------------- 当前使用的地图模块 ---------------- */
+  function getMapModule() {
+    if (typeof MAPS !== 'undefined') {
+      var m = MAPS.get(SET.map);
+      if (m && m.module) return m.module;
+    }
+    return MAP;  // fallback
+  }
+
+  /* 换地图时清空地图分组并重建几何（地板/墙/掩体/远景/包点标记） */
+  function rebuildMap() {
+    if (!mapGroup) return;
+    for (var i = mapGroup.children.length - 1; i >= 0; i--) {
+      var c = mapGroup.children[i];
+      mapGroup.remove(c);
+      if (c.geometry) c.geometry.dispose();
+    }
+    getMapModule().build(mapGroup, tex);
+  }
   function loadSettings() {
     try {
       var s = JSON.parse(localStorage.getItem('cs16_settings') || '{}');
@@ -25,7 +51,7 @@ var GAME = (function () {
     try { localStorage.setItem('cs16_settings', JSON.stringify(SET)); } catch (e) { }
   }
 
-  /* ---------------- 状态 ---------------- */
+  /* ---------------- 状态（含团队竞技） ---------------- */
   var renderer, scene, camera, vmScene, vmCam, tex, clock;
   var player, bots = [], all = [], tList = [], ctList = [];
   var running = false, paused = false, started = false;
@@ -37,7 +63,7 @@ var GAME = (function () {
   var defuseProgress = 0, plantProgress = 0, botDefuse = 0;
   var killfeed = [];
   var vm = null, vmRecoil = { x: 0, y: 0, z: 0 }, vmBob = 0, vmSwayX = 0, vmSwayY = 0;
-  var punch = { x: 0, y: 0 };      // 后坐力造成的视角偏移
+  var punch = { x: 0, y: 0 };
   var recoilIdx = 0;
   var lastShotT = 0;
   var mouse = { down: false, rdown: false };
@@ -51,7 +77,15 @@ var GAME = (function () {
   var sbTimer = 0;
   var scoped = false;
   var hadLock = false;
-  var suppressAutoPause = false;   // 主动释放鼠标锁时，别把它当成「用户按了 Esc」
+  var suppressAutoPause = false;
+  // 团队竞技
+  var teamDmKillLimit = 0;
+  var teamDmRespawning = false;
+  var teamDmRespawnTimer = 0;
+  var playerCorpse = null;   // 玩家尸体模型（团队竞技第三人称死亡视角）
+  var mapGroup = null;       // 地图几何独立分组，换地图时整体重建
+  // 性能
+  var vmModelCache = {};
 
   var shakeT = 0, shakeMag = 0;
   var peak = { spread: 0, punch: 0, burst: 0 };   // 仅用于自检读数
@@ -150,13 +184,20 @@ var GAME = (function () {
     }
   }
 
-  /* 是否处于可购买状态 —— 存活 + 在自家出生区 + 回合刚开始 */
+  /* 是否处于可购买状态 —— 存活 + 在自家出生区 + 购买窗口内
+   * 爆破：回合开始 buyTime 秒内；团队竞技：每次复活后 buyTime 秒内 */
   function buyState() {
     if (!player || player.dead) return { ok: false, why: '阵亡后不能购买' };
     if (matchOver) return { ok: false, why: '比赛已结束' };
-    var inTime = phase === 'freeze' || (phase === 'live' && roundClock > SET.roundTime - MONEY.buyTime);
-    if (!inTime) return { ok: false, why: '购买时间已过（回合开始 ' + MONEY.buyTime + ' 秒内）' };
-    if (!MAP.inBuyZone(player.team, player.x, player.z)) return { ok: false, why: '必须回到自家出生区才能购买' };
+    var inTime;
+    if (SET.gameMode === 'teamdm') {
+      inTime = time < (player.buyUntil || 0);
+      if (!inTime) return { ok: false, why: '复活后 ' + MONEY.buyTime + ' 秒内才能购买' };
+    } else {
+      inTime = phase === 'freeze' || (phase === 'live' && roundClock > SET.roundTime - MONEY.buyTime);
+      if (!inTime) return { ok: false, why: '购买时间已过（回合开始 ' + MONEY.buyTime + ' 秒内）' };
+    }
+    if (!getMapModule().inBuyZone(player.team, player.x, player.z)) return { ok: false, why: '必须回到自家出生区才能购买' };
     return { ok: true, why: '' };
   }
 
@@ -205,7 +246,9 @@ var GAME = (function () {
     );
     scene.add(sky);
 
-    MAP.build(scene, tex);
+    mapGroup = new THREE.Group();
+    scene.add(mapGroup);
+    getMapModule().build(mapGroup, tex);
     effects = makeEffects();
     buildBombMesh();
 
@@ -234,6 +277,8 @@ var GAME = (function () {
     cacheHud();
     initRadar();
     bindInput();
+    // 手机触控初始化（在 bindInput 之后，不冲突）
+    if (typeof TOUCH !== 'undefined') TOUCH.detect();
     bindUI();
     applySettingsToUI();
 
@@ -247,7 +292,7 @@ var GAME = (function () {
       var m = q.match(/max=(\d+)/); if (m) SET.maxScore = parseInt(m[1], 10);
       m = q.match(/diff=(\w+)/); if (m && SKILLS[m[1]]) SET.difficulty = m[1];
       m = q.match(/team=(CT|T)\b/); if (m) SET.team = m[1];
-      m = q.match(/size=(\d)/); if (m) SET.teamSize = parseInt(m[1], 10);
+      m = q.match(/size=(\d+)/); if (m) SET.teamSize = parseInt(m[1], 10);
       setTimeout(startMatch, 60);
     }
   }
@@ -263,8 +308,15 @@ var GAME = (function () {
    *  玩家
    * ================================================================ */
   function makePlayer(team) {
+    var defaultName = '你';
+    try {
+      if (typeof VIBE !== 'undefined' && VIBE.getUser) {
+        var u = VIBE.getUser();
+        if (u && u.name) defaultName = u.name;
+      }
+    } catch (e) { }
     return {
-      isPlayer: true, name: '你', team: team,
+      isPlayer: true, name: defaultName, team: team,
       x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
       yaw: 0, pitch: 0, health: 100, armor: 0, helmet: false, defuser: false,
       money: MONEY.start, nades: {},
@@ -274,16 +326,17 @@ var GAME = (function () {
     };
   }
 
-  function giveLoadout(e, list) {
-    e.weapons = list.slice();
-    e.ammo = {}; e.reserve = {};
-    for (var i = 0; i < list.length; i++) {
-      var d = WEAPONS.defs[list[i]];
-      e.ammo[list[i]] = d.mag;
-      e.reserve[list[i]] = d.reserve;
-    }
-    e.wi = 0;
+function giveLoadout(e, list) {
+  e.weapons = list.slice();
+  e.ammo = {}; e.reserve = {};
+  for (var i = 0; i < list.length; i++) {
+    var d = WEAPONS.defs[list[i]];
+    e.ammo[list[i]] = d.mag;
+    e.reserve[list[i]] = d.reserve;
   }
+  e.wi = 0;
+  if (e.isPlayer) setViewModel(list[0], e.team);
+}
 
   /* 补满已有武器的弹药（回合开始时 CS 会把备弹补满） */
   function refillAmmo(e) {
@@ -369,7 +422,7 @@ var GAME = (function () {
         player.reloadEnd = 0; player.nextFire = time + 0.3;
         player.shotsInBurst = 0; player.spreadPen = 0;
         scoped = false; setScope(false);
-        setViewModel(d.id);
+        setViewModel(d.id, player.team);
       }
     }
     // granted 时钱已由房主扣过（buyResult 里带权威值），本地不能再扣一次
@@ -398,24 +451,82 @@ var GAME = (function () {
   function eyeY(e) { return e.y + (e.crouch ? 30 : 64); }
   function weaponOf(e) { return WEAPONS.defs[e.weapons[e.wi]]; }
 
-  function setViewModel(id) {
+  function setViewModel(id, team) {
+    // 团队竞技时 team 需要传入（可能观战 bot）
+    var t = team || (player ? player.team : 'CT');
+    var key = id + '_' + t;
+    if (vm && vm.id === id && vm.team === t) return;  // 同武器不重建
+    if (vmModelCache[key]) {
+      if (vm) vmScene.remove(vm.root);
+      vm = vmModelCache[key];
+      vmScene.add(vm.root);
+      /* 火光 Sprite 只挂一次：反复 add 会叠一堆，旧 sprite 的计时器引用被
+       * 覆盖后永远 visible=true —— 这就是「枪口火光一直存在」的根因 */
+      if (!vm.flash) { vm.flash = effects.makeVmFlash(); vm.muzzle.add(vm.flash); }
+      vm.flash.visible = false; vm.flashT = 0;
+      return;
+    }
     if (vm) vmScene.remove(vm.root);
-    vm = WEAPONS.makeViewModel(id, player.team);
+    vm = WEAPONS.makeViewModel(id, t);
+    vm.id = id;
+    vm.team = t;
+    vmModelCache[key] = vm;
     vmScene.add(vm.root);
-    vm.flash = effects.makeVmFlash();
-    vm.muzzle.add(vm.flash);
+    if (!vm.flash) { vm.flash = effects.makeVmFlash(); vm.muzzle.add(vm.flash); }
+    vm.flash.visible = false; vm.flashT = 0;
   }
 
   /* ================================================================
    *  开始比赛 / 回合
    * ================================================================ */
+
+  /* 清掉上一局残留的瞬时 UI 与状态。
+   * 「再来一局」按钮不经过 onQuit 直接调 startMatch，团队竞技的 startTeamDM
+   * 又不像 newRound 那样逐项复位 —— 上一局死亡时的中央阵亡提示 / 复活进度条 /
+   * 白屏 / 尸体 / 飞行中的手雷会全部带进新对局，直到下次复活才被冲掉。 */
+  function resetMatchHud() {
+    spectate = null; deadT = 0;
+    clearSpectateHidden();
+    blindT = 0; nadeHold = false;
+    punch.x = punch.y = 0;
+    scoped = false;
+    teamDmRespawning = false; teamDmRespawnTimer = 0;
+    bomb.planted = false; bomb.timer = 0; bomb.defusing = 0;
+    if (bomb.mesh) bomb.mesh.visible = false;
+    var ids = ['deadmsg', 'progressWrap', 'scope', 'bombhud'];
+    for (var i = 0; i < ids.length; i++) {
+      var el = document.getElementById(ids[i]);
+      if (el) el.classList.add('hidden');
+    }
+    if (hud.flashblind) hud.flashblind.style.opacity = 0;
+    if (hud.flash) hud.flash.style.opacity = 0;
+    if (hud.banner) { clearTimeout(banner._t); hud.banner.style.opacity = 0; hud.banner.classList.add('hidden'); }
+    if (hud.dmgdir) hud.dmgdir.innerHTML = '';
+    if (hud.killfeed) hud.killfeed.innerHTML = '';
+    if (hud.radiofeed) hud.radiofeed.innerHTML = '';
+    removePlayerCorpse();
+    if (BUYMENU && BUYMENU.isOpen()) BUYMENU.close();
+    if (effects) effects.clear();
+    if (NADE && NADE.clear) NADE.clear();
+  }
+
   function startMatch() {
     saveSettings();
     SFX.init(); SFX.setVolume(SET.volume); SFX.resume();
+    resetMatchHud();   // 先清上一局残留（死亡提示 / 白屏 / 手雷 / 尸体等）
+
+    // 让全局 MAP 指向当前选择的地图，bots.js 里的 MAP.* 才会用对地图
+    MAP = getMapModule();
+    rebuildMap();  // 换地图后重建 3D 几何
+    initRadar();   // 换地图后重新烘焙雷达底图
 
     // 清理旧 bot
     for (var i = 0; i < bots.length; i++) scene.remove(bots[i].model.group);
     bots = []; all = []; tList = []; ctList = [];
+    removePlayerCorpse();
+    teamDmRespawning = false; teamDmRespawnTimer = 0;
+    nameplates.forEach(function (p) { disposeNameplate(p); });
+    nameplates.clear();
 
     player = makePlayer(SET.team);
     all.push(player);
@@ -426,28 +537,172 @@ var GAME = (function () {
       do { n = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)]; } while (used[n]);
       used[n] = 1; return n;
     }
-    var per = SET.teamSize;
-    for (i = 0; i < per - 1; i++) bots.push(new Bot(SET.team, pickName(), SET.difficulty, scene));
+    // 每队总人数 = SET.teamSize；真人（本机玩家 + 已进房的联机玩家）占用的名额由 bot 补齐
+    var humansMy = 0, humansOther = 0, hi;
+    for (hi = 0; hi < all.length; hi++) {
+      if (all[hi].isBot) continue;
+      if (all[hi].team === SET.team) humansMy++; else humansOther++;
+    }
+    var myBots = Math.max(0, SET.teamSize - humansMy);
+    var otherBots = Math.max(0, SET.teamSize - humansOther);
     var other = SET.team === 'T' ? 'CT' : 'T';
-    for (i = 0; i < per; i++) bots.push(new Bot(other, pickName(), SET.difficulty, scene));
+    for (i = 0; i < myBots; i++) bots.push(new Bot(SET.team, pickName(), SET.difficulty, scene));
+    for (i = 0; i < otherBots; i++) bots.push(new Bot(other, pickName(), SET.difficulty, scene));
     all = all.concat(bots);
     rebuildTeams();
 
     score.T = 0; score.CT = 0; round = 0; matchOver = false;
     lossStreak.T = 0; lossStreak.CT = 0;
-    for (i = 0; i < all.length; i++) {
-      all[i].money = MONEY.start;
-      all[i].armor = 0; all[i].helmet = false; all[i].defuser = false;
-      all[i].nades = {};
-      all[i].dead = true;          // 让第一回合按「阵亡者」发默认装备
-    }
     killfeed = [];
     started = true; running = true; paused = false;
     document.getElementById('menu').classList.add('hidden');
     document.getElementById('matchend').classList.add('hidden');
     document.getElementById('hud').classList.remove('hidden');
-    newRound();
+
+    // 团队竞技 vs 爆破模式分支
+    if (SET.gameMode === 'teamdm') {
+      startTeamDM();
+    } else {
+      // 爆破模式：先让所有人阵亡，触发默认装备发放
+      for (i = 0; i < all.length; i++) {
+        all[i].money = MONEY.start;
+        all[i].armor = 0; all[i].helmet = false; all[i].defuser = false;
+        all[i].nades = {};
+        all[i].dead = true;
+      }
+      newRound();
+    }
     requestLock();
+  }
+
+  /* ================================================================
+   *  团队竞技模式
+   * ================================================================ */
+  function startTeamDM() {
+    teamDmKillLimit = SET.lives;
+    teamDmRespawning = false;
+    for (var i = 0; i < all.length; i++) {
+      all[i].money = 99999;
+      all[i].armor = 100;
+      all[i].helmet = true;
+      all[i].defuser = false;
+      all[i].nades = {};
+      all[i].dead = false;
+      giveTeamDMLoadout(all[i]);
+    }
+    // 直接从 live 开始，不打 freeze
+    phase = 'live'; phaseT = 0;
+    var tSp = getMapModule().SPAWNS.T.slice(), ctSp = getMapModule().SPAWNS.CT.slice();
+    shuffle(tSp); shuffle(ctSp);
+    var ti = 0, ci = 0;
+    var takenT = [], takenCT = [];
+    for (i = 0; i < all.length; i++) {
+      var e = all[i];
+      var sp = e.team === 'T' ? tSp[(ti++) % tSp.length] : ctSp[(ci++) % ctSp.length];
+      var pos = placeEntity(e, sp, e.team === 'T' ? takenT : takenCT);
+      e.x = pos[0]; e.y = pos[1]; e.z = pos[2];
+      e.vx = e.vy = e.vz = 0;
+      e.health = 100; e.dead = false; e.crouch = false;
+      e.reloadEnd = 0; e.nextFire = 0;
+      e.shotsInBurst = 0; e.spreadPen = 0; e.curSpread = 0;
+      setViewModel(e.weapons[e.wi], e.team);
+      e.yaw = Math.atan2(-(0 - e.x), -(0 - e.z));
+      e.pitch = 0;
+      e.buyUntil = time + MONEY.buyTime;   // 团队竞技：复活后 20 秒可购买
+      e.spawnProtectedUntil = netNow() + NET.P.SPAWN_PROTECT_MS;
+    }
+    banner('团队竞技 · 先达到 ' + teamDmKillLimit + ' 杀获胜', 2.5);
+    SFX.roundStart();
+    updateHud();
+  }
+
+  function giveTeamDMLoadout(e) {
+    /* 随机主武器 + 副武器，加 1~2 颗投掷物 */
+    var primaries = ['ak47', 'famas', 'galil', 'm4a1', 'mp5', 'm3', 'awp'];
+    var secondaries = e.team === 'T' ? ['glock'] : ['usp'];
+    var pWeap = primaries[Math.floor(Math.random() * primaries.length)];
+    var sWeap = secondaries[Math.floor(Math.random() * secondaries.length)];
+    var loadout = ['knife', pWeap, sWeap];
+    // 投掷物：随机 1~2 颗
+    var nades = ['he', 'flash', 'smoke'];
+    var nadeCount = 1 + Math.floor(Math.random() * 2);
+    for (var n = 0; n < nadeCount; n++) {
+      var pick = nades[Math.floor(Math.random() * nades.length)];
+      if (loadout.indexOf(pick) < 0) loadout.push(pick);
+    }
+    giveLoadout(e, loadout);
+  }
+
+  /* 玩家尸体（团队竞技）：生成 / 移除 */
+  function spawnPlayerCorpse() {
+    removePlayerCorpse();
+    var model = CHAR.make(player.team);
+    playerCorpse = {
+      model: model,
+      x: player.x, y: player.y, z: player.z,
+      yaw: player.yaw, pitch: 0,
+      dead: true, deadTilt: 0, vx: 0, vz: 0, crouch: false
+    };
+    model.group.visible = true;
+    scene.add(model.group);
+  }
+  function removePlayerCorpse() {
+    if (playerCorpse) { scene.remove(playerCorpse.model.group); playerCorpse = null; }
+  }
+
+  function teamDMRespawn(e) {
+    var sp = getMapModule().SPAWNS[e.team];
+    var pos = placeEntity(e, sp[Math.floor(Math.random() * sp.length)], []);
+    if (e.isBot) {
+      // bot：用 spawn 重置模型（站起、朝向、可见）并发装备
+      e.spawn(pos[0], pos[2], e.weapons.slice(), pos[1], true);
+      e.armor = 100; e.helmet = true;
+      e.goalStale = true;
+      return;
+    }
+    // 玩家：移除尸体、恢复第一人称
+    removePlayerCorpse();
+    if (hud.progressWrap) hud.progressWrap.classList.add('hidden');
+    if (hud.deadmsg) hud.deadmsg.classList.add('hidden');
+    e.dead = false;
+    e.health = 100;
+    e.armor = 100; e.helmet = true; e.defuser = false;
+    e.nades = {};
+    giveTeamDMLoadout(e);
+    e.x = pos[0]; e.y = pos[1]; e.z = pos[2];
+    e.vx = e.vy = e.vz = 0;
+    e.reloadEnd = 0; e.nextFire = 0;
+    e.shotsInBurst = 0; e.spreadPen = 0; e.curSpread = 0;
+    setViewModel(e.weapons[e.wi], e.team);
+    e.yaw = Math.atan2(-(0 - e.x), -(0 - e.z));
+    e.pitch = 0;
+    e.buyUntil = time + MONEY.buyTime;   // 复活后 20 秒可购买
+    e.spawnProtectedUntil = netNow() + NET.P.SPAWN_PROTECT_MS;
+    if (e.history) e.history.clear();
+    updateHud();
+  }
+
+  function showMatchEnd() {
+    running = false;
+    releaseLock();
+    var el = document.getElementById('matchend');
+    var limit = SET.gameMode === 'teamdm' ? teamDmKillLimit : SET.maxScore;
+    var win = score[player.team] >= limit;
+    document.getElementById('meTitle').textContent = win ? '比赛胜利' : '比赛失败';
+    document.getElementById('meTitle').style.color = win ? '#9ce06a' : '#ff7f6a';
+    document.getElementById('meScore').textContent = 'CT ' + score.CT + '  :  ' + score.T + ' T';
+    var modeLabel = SET.gameMode === 'teamdm' ? (' · 目标 ' + teamDmKillLimit + ' 杀') : (' · 回合 ' + round);
+    document.getElementById('meStat').textContent = '击杀 ' + player.kills + ' · 死亡 ' + player.deaths + modeLabel;
+    el.classList.remove('hidden');
+    var btnAgain = document.getElementById('btnAgain');
+    if (btnAgain) btnAgain.onclick = function () { el.classList.add('hidden'); startMatch(); };
+    var btnMenu2 = document.getElementById('btnMenu2');
+    if (btnMenu2) btnMenu2.onclick = function () {
+      el.classList.add('hidden');
+      document.getElementById('hud').classList.add('hidden');
+      document.getElementById('menu').classList.remove('hidden');
+      started = false;
+    };
   }
 
   function rebuildTeams() {
@@ -456,7 +711,7 @@ var GAME = (function () {
   }
 
   /* 出生点是否被地图几何（箱子 / 墙）或已出生的队友占据。
-   * MAP.safeSpawn 需要这样一个探测函数，用它可以把人挤到旁边的空地上，
+   * getMapModule().safeSpawn 需要这样一个探测函数，用它可以把人挤到旁边的空地上，
    * 避免直接把人塞进箱子里动不了。 */
   function makeSpawnProbe(taken) {
     var probe = { x: 0, y: 0, z: 0, crouch: false };
@@ -474,7 +729,7 @@ var GAME = (function () {
 
   function placeEntity(e, sp, taken) {
     var probe = makeSpawnProbe(taken);
-    var p = MAP.safeSpawn(sp[0], sp[1], probe);
+    var p = getMapModule().safeSpawn(sp[0], sp[1], probe);
     // 万一还是被包住（极端情况），抬到脚下支撑面上再放
     var y = 0;
     if (probe(p[0], p[1])) {
@@ -483,6 +738,35 @@ var GAME = (function () {
     }
     taken.push([p[0], p[1]]);
     return [p[0], y, p[1]];
+  }
+
+  /* 按每队总人数补齐/移除 bot（真人加入或离开后，回合开始时重新平衡） */
+  function balanceBots() {
+    var humansT = 0, humansCT = 0, i;
+    for (i = 0; i < all.length; i++) {
+      if (all[i].isBot) continue;
+      if (all[i].team === 'T') humansT++; else humansCT++;
+    }
+    var wantT = Math.max(0, SET.teamSize - humansT);
+    var wantCT = Math.max(0, SET.teamSize - humansCT);
+    function teamCount(t) { var n = 0; for (var k = 0; k < bots.length; k++) if (bots[k].team === t) n++; return n; }
+    for (i = bots.length - 1; i >= 0; i--) {
+      var b = bots[i];
+      if (teamCount(b.team) > (b.team === 'T' ? wantT : wantCT)) {
+        scene.remove(b.model.group);
+        var bi = bots.indexOf(b); if (bi >= 0) bots.splice(bi, 1);
+        var ai = all.indexOf(b); if (ai >= 0) all.splice(ai, 1);
+      }
+    }
+    var used = {};
+    function pickName() {
+      var n;
+      do { n = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)]; } while (used[n]);
+      used[n] = 1; return n;
+    }
+    while (teamCount('T') < wantT) { var bt = new Bot('T', pickName(), SET.difficulty, scene); bots.push(bt); all.push(bt); }
+    while (teamCount('CT') < wantCT) { var bc = new Bot('CT', pickName(), SET.difficulty, scene); bots.push(bc); all.push(bc); }
+    rebuildTeams();
   }
 
   function newRound() {
@@ -503,10 +787,13 @@ var GAME = (function () {
     effects.clear();
     NADE.clear();
 
-    targetSite = MAP.SITES[Math.floor(Math.random() * MAP.SITES.length)];
+    // 权威端：真人加入/离开后，按每队总人数重新平衡 bot
+    if (netAuthoritative()) balanceBots();
+
+    targetSite = getMapModule().SITES[Math.floor(Math.random() * getMapModule().SITES.length)];
 
     // T / CT 出生
-    var tSp = MAP.SPAWNS.T.slice(), ctSp = MAP.SPAWNS.CT.slice();
+    var tSp = getMapModule().SPAWNS.T.slice(), ctSp = getMapModule().SPAWNS.CT.slice();
     shuffle(tSp); shuffle(ctSp);
     var ti = 0, ci = 0;
     var takenT = [], takenCT = [];
@@ -529,18 +816,18 @@ var GAME = (function () {
           e.armor = 0; e.helmet = false; e.defuser = false; e.nades = {};
           giveLoadout(e, WEAPONS.loadoutFor(e.team));
         }
-        setViewModel(e.weapons[e.wi]);
-        e.yaw = Math.atan2(-(0 - e.x), -(0 - e.z));
-        e.pitch = 0;
-        // 联机：每次重生换一个 lifeId，并给一小段重生保护
-        netMyLife++;
-        e.spawnProtectedUntil = netNow() + NET.P.SPAWN_PROTECT_MS;
-        if (e.history) e.history.clear();
-      } else {
+    setViewModel(e.weapons[e.wi], e.team);
+    e.yaw = Math.atan2(-(0 - e.x), -(0 - e.z));
+    e.pitch = 0;
+    // 联机：每次重生换一个 lifeId，并给一小段重生保护
+    netMyLife++;
+    e.spawnProtectedUntil = netNow() + NET.P.SPAWN_PROTECT_MS;
+    if (e.history) e.history.clear();
+  } else {
         e.spawn(pos[0], pos[2], survived ? e.weapons.slice() : WEAPONS.loadoutFor(e.team), pos[1], survived);
         if (survived) refillAmmo(e);
         e.buyPhase();                 // bot 用同一套经济买枪 / 护甲 / 拆弹器 / 手雷
-        e.defendSite = MAP.SITES[i % MAP.SITES.length];
+        e.defendSite = getMapModule().SITES[i % getMapModule().SITES.length];
         e.goalStale = true;
       }
     }
@@ -553,6 +840,7 @@ var GAME = (function () {
     setBombHud(false);
     SFX.roundStart();
     if (BUYMENU) BUYMENU.close();
+    roundStartRadio();   // 战术语音：真实的购买与去向播报（最多 4 条）
     // 联机房主：把出生点、钱和 C4 携带者下发给客户端
     if (netMode && netIsHost()) { netBotDelta.reset(); netBroadcastRoundStart(); netBroadcastMatch(true); }
     updateHud();
@@ -562,14 +850,12 @@ var GAME = (function () {
     if (phase === 'over') return;
     phase = 'over'; phaseT = 4.0;
     score[winner]++;
-    awardRoundMoney(winner, reason);
+    if (SET.gameMode !== 'teamdm') awardRoundMoney(winner, reason);
     var mine = winner === player.team;
     banner((winner === 'T' ? '恐怖分子' : '反恐精英') + '获胜 · ' + reason, 3.4, mine ? '#8fdc6a' : '#ff8b6a');
     if (mine) SFX.win(); else SFX.lose();
-    if (score[winner] >= SET.maxScore) {
-      matchOver = true;
-      setTimeout(showMatchEnd, 2600);
-    }
+    var limit = SET.gameMode === 'teamdm' ? teamDmKillLimit : SET.maxScore;
+    if (score[winner] >= limit) { matchOver = true; setTimeout(showMatchEnd, 2600); }
     if (netMode && netIsHost()) netBroadcastRoundEnd(winner, reason);
     updateHud();
   }
@@ -585,6 +871,19 @@ var GAME = (function () {
     document.getElementById('meStat').textContent =
       '击杀 ' + player.kills + ' · 死亡 ' + player.deaths + ' · 回合 ' + round;
     el.classList.remove('hidden');
+    // 给「再来一局」和「返回主菜单」绑定（每次都绑，安全）
+    var btnAgain = document.getElementById('btnAgain');
+    if (btnAgain) btnAgain.onclick = function () {
+      el.classList.add('hidden');
+      startMatch();
+    };
+    var btnMenu2 = document.getElementById('btnMenu2');
+    if (btnMenu2) btnMenu2.onclick = function () {
+      el.classList.add('hidden');
+      document.getElementById('hud').classList.add('hidden');
+      document.getElementById('menu').classList.remove('hidden');
+      started = false;
+    };
   }
 
   function aliveCount(list) {
@@ -622,11 +921,24 @@ var GAME = (function () {
     plantProgress = 0;
     SFX.bombPlant();
     addMoney(who, MONEY.plant, '安放 C4');
-    var site = MAP.siteAt(who.x, who.z);
+    var site = getMapModule().siteAt(who.x, who.z);
     banner('炸弹已安放' + (site ? ' 在 ' + site.name + ' 点' : ''), 2.2, '#ffd24a');
     addKillfeed(who.name, '安放了 C4', '', false, true);
     setBombHud(true);
     for (var i = 0; i < bots.length; i++) bots[i].goalStale = true;
+    // 战术语音（分队：只播玩家阵营的通讯）——
+    // 安放后存活队友真实转向包点：CT 是回防拆弹（defuse），T 是回守（hold）
+    var myTeam = player ? player.team : SET.team;
+    var mates = [];
+    for (var j = 0; j < bots.length; j++) if (bots[j].team === myTeam && !bots[j].dead) mates.push(bots[j]);
+    shuffle(mates);
+    var siteName = site ? site.name : '';
+    var msg = myTeam === 'CT' ? '正在回防' + siteName + '区' : '正在回守' + siteName + '区，守住C4';
+    for (var k = 0; k < Math.min(2, mates.length); k++) {
+      (function (bb, delay) {
+        setTimeout(function () { if (running && !bb.dead) addRadio(bb.name, bb.team, msg); }, delay);
+      })(mates[k], 600 + k * 700);
+    }
   }
 
   function defuseBomb(who) {
@@ -687,7 +999,7 @@ var GAME = (function () {
   /* 主射线：命中世界或实体。quiet=true 用于霰弹的第 2..n 颗弹丸（不重复播枪声） */
   function fireBullet(shooter, ox, oy, oz, dx, dy, dz, w, quiet) {
     var maxD = w.range;
-    var wallHit = MAP.traceRay(ox, oy, oz, dx, dy, dz, maxD, {});
+    var wallHit = getMapModule().traceRay(ox, oy, oz, dx, dy, dz, maxD, {});
     var wallDist = wallHit ? wallHit.dist : maxD;
 
     var enemies = shooter.team === 'T' ? ctList : tList;
@@ -778,6 +1090,7 @@ var GAME = (function () {
 
   function applyDamage(victim, attacker, dmg, headshot, w) {
     if (victim.dead) return;
+    if (!isFinite(victim.health)) victim.health = 100;   // 血量一旦 NaN 就永远打不死，这里硬性拉回
     if (testInvuln && victim.isPlayer) return;      // 只有 ?selftest 模式会打开
     // 联机：远程玩家的血量由他自己算（房主只负责判定命中并通知他）。
     // 这条拦截保证任何本地路径（爆炸、手雷、预测弹道）都不会替别人扣血。
@@ -787,13 +1100,16 @@ var GAME = (function () {
     }
     // 头盔削减爆头伤害（CS1.6 里头盔能把很多枪的爆头从必死变成重伤）
     if (headshot && victim.helmet && w) dmg *= 0.45;
-    var pen = w ? w.armorPen : 0.8;
+    var pen = w ? (w.armorPen > 0 ? w.armorPen : 0.75) : 0.8;
     if (victim.armor > 0) {
       var toArmor = dmg * (1 - pen) * 0.5;
       dmg = dmg * pen;
       victim.armor = Math.max(0, victim.armor - Math.max(1, toArmor * 1.6));
     }
+    /* 兜底：任何路径算出 NaN/0/负数都会让血量永久不变（看起来就是「无敌」），
+     * 这里保证伤害永远是 ≥1 的有效数字 */
     dmg = Math.round(dmg);
+    if (!isFinite(dmg) || dmg < 1) dmg = 1;
     victim.health -= dmg;
 
     if (victim.isPlayer) {
@@ -823,14 +1139,29 @@ var GAME = (function () {
       document.getElementById('deadmsg').classList.remove('hidden');
       SFX.death(0);
       setScope(false);
+      // 团队竞技：生成尸体 + 3 秒后复活（不进入观战）
+      if (SET.gameMode === 'teamdm') {
+        spawnPlayerCorpse();
+        teamDmRespawning = true;
+        teamDmRespawnTimer = 3.0;
+      }
     } else {
       victim.die();
       SFX.death(Math.hypot(victim.x - player.x, victim.z - player.z));
+      // 团队竞技：bot 也复活
+      if (SET.gameMode === 'teamdm') {
+        setTimeout(function () { if (started && SET.gameMode === 'teamdm') teamDMRespawn(victim); }, 2500 + Math.random() * 1500);
+      }
     }
     if (attacker && attacker !== victim) {
       attacker.kills++;
-      // 击杀奖金按武器（步枪 300 / AWP 100 / 霰弹 900 / 匕首 1500）
-      addMoney(attacker, w && w.kill !== undefined ? w.kill : 300, '击杀');
+      // 团队竞技：直接给队伍加一分
+      if (SET.gameMode === 'teamdm') {
+        score[attacker.team]++;
+        checkRoundEnd();
+      } else {
+        addMoney(attacker, w && w.kill !== undefined ? w.kill : 300, '击杀');
+      }
     }
 
     addKillfeed(attacker ? attacker.name : '世界', w ? w.name : '', victim.name, headshot,
@@ -846,8 +1177,14 @@ var GAME = (function () {
   }
 
   function checkRoundEnd() {
+    if (SET.gameMode === 'teamdm') {
+      if (phase === 'over') return;
+      if (score.T >= teamDmKillLimit) endRound('T', '团队竞技 · 恐怖分子达成 ' + teamDmKillLimit + ' 杀');
+      else if (score.CT >= teamDmKillLimit) endRound('CT', '团队竞技 · 反恐精英达成 ' + teamDmKillLimit + ' 杀');
+      return;
+    }
     if (phase === 'over') return;
-    if (!netAuthoritative()) return;            // 回合结束由房主判定
+    if (!netAuthoritative()) return;
     var tAlive = aliveCount(tList), ctAlive = aliveCount(ctList);
     if (tAlive === 0 && !bomb.planted) endRound('CT', '恐怖分子被全部消灭');
     else if (ctAlive === 0) endRound('T', '反恐精英被全部消灭');
@@ -916,6 +1253,7 @@ var GAME = (function () {
       keys[c] = true;
       if (!started) return;
       if (c === 'Escape') {
+        if (bigMapOpen) { toggleBigMap(); return; }
         // 菜单开着时 Esc 只关菜单并把鼠标锁回来，不进暂停
         if (BUYMENU.isOpen()) { BUYMENU.close(); requestLock(); return; }
         togglePause(); return;
@@ -936,6 +1274,7 @@ var GAME = (function () {
         return;
       }
       if (c === 'KeyR') startReload();
+      if (c === 'KeyM') toggleBigMap();
       if (c === 'Digit1') selectSlot('primary');
       if (c === 'Digit2') selectSlot('secondary');
       if (c === 'Digit3') selectSlot('knife');
@@ -961,19 +1300,19 @@ var GAME = (function () {
     if (document.exitPointerLock) document.exitPointerLock();
   }
 
-  function switchWeapon(i) {
-    if (i < 0 || i >= player.weapons.length || i === player.wi) return;
-    player.wi = i;
-    player.reloadEnd = 0;
-    player.nextFire = time + 0.28;
-    player.shotsInBurst = 0;
-    player.spreadPen = 0;
-    scoped = false; setScope(false);
-    setViewModel(player.weapons[i]);
-    SFX.switchWeapon();
-    vmRecoil.z = -2.5;
-    updateHud();
-  }
+function switchWeapon(i) {
+  if (i < 0 || i >= player.weapons.length || i === player.wi) return;
+  player.wi = i;
+  player.reloadEnd = 0;
+  player.nextFire = time + 0.28;
+  player.shotsInBurst = 0;
+  player.spreadPen = 0;
+  scoped = false; setScope(false);
+  setViewModel(player.weapons[i], player.team);
+  SFX.switchWeapon();
+  vmRecoil.z = -2.5;
+  updateHud();
+}
 
   function startReload() {
     var w = weaponOf(player);
@@ -998,10 +1337,27 @@ var GAME = (function () {
   function updatePlayer(dt) {
     if (player.dead) {
       deadT += dt;
-      // 死亡后跟随队友视角
+      // 团队竞技：不观战，第三人称看自己尸体 + 复活进度条
+      if (SET.gameMode === 'teamdm') {
+        if (playerCorpse) CHAR.animate(playerCorpse.model, playerCorpse, dt);
+        if (hud.progressWrap && teamDmRespawning) {
+          hud.progressLabel.textContent = '复活中…';
+          setProgress(1 - Math.max(0, teamDmRespawnTimer) / 3.0);
+          hud.progressWrap.classList.remove('hidden');
+        }
+        return;
+      }
+      // 爆破模式：死亡后跟随队友视角
       if (deadT > 2.4 && (!spectate || spectate.dead)) {
         var mates = spectateMates();
         spectate = mates.length ? mates[Math.floor(Math.random() * mates.length)] : null;
+      }
+      // 观战对象换武器时更新视角模型（走缓存 + 标 id，否则会每帧重建泄漏几何体）
+      if (spectate && !spectate.dead) {
+        var specWi = spectate.weapons[spectate.wi];
+        if (specWi && vm && vm.id !== specWi) {
+          setViewModel(specWi, spectate.team);
+        }
       }
       updateSpectateHud();
       return;
@@ -1227,7 +1583,7 @@ var GAME = (function () {
     // 安放 / 拆除的提示音按固定节奏播（原来每帧随机触发，节奏散乱又太短，听着像只响了一下）
     var ticking = false, tickProgress = 0;
     if (player.team === 'T' && !bomb.planted && amCarrier) {
-      var site = MAP.siteAt(player.x, player.z);
+      var site = getMapModule().siteAt(player.x, player.z);
       if (site && player.onGround) {
         show = true;
         var pProg = client ? netHostPlantProgress : plantProgress;
@@ -1281,6 +1637,16 @@ var GAME = (function () {
    *  摄像机 / 视角模型
    * ================================================================ */
   function updateCamera(dt) {
+    // 团队竞技：玩家死亡时第三人称看自己尸体，不观战
+    if (player.dead && SET.gameMode === 'teamdm') {
+      var dist = 110, height = 70;
+      var bx = player.x + Math.sin(player.yaw) * dist;   // 身后
+      var bz = player.z + Math.cos(player.yaw) * dist;
+      camera.position.set(bx, player.y + height, bz);
+      camera.lookAt(player.x, player.y + 26, player.z);
+      if (vm) vm.root.visible = false;   // 死亡时不显示第一人称武器
+      return;
+    }
     var src = player;
     if (player.dead && spectate && !spectate.dead) src = spectate;
 
@@ -1328,17 +1694,21 @@ var GAME = (function () {
 
     // 视角模型：摆动 + 后坐 + 换弹动作
     if (vm) {
-      vm.root.visible = !player.dead && !scoped;
+      // 观战队友时也显示武器模型（用被观战者持有的武器）
+      var vmVisible = !scoped && (player.dead ? (!!spectate && !spectate.dead && spectate !== player) : true);
+      vm.root.visible = vmVisible;
+      var vmSrc = (player.dead && spectate && !spectate.dead) ? spectate : player;
       var swayTarget = 0;
-      vmSwayX += ((sp / 250) * Math.sin(vmBob) * 0.5 - vmSwayX) * Math.min(1, dt * 8);
-      vmSwayY += ((sp / 250) * Math.abs(Math.cos(vmBob)) * 0.55 - vmSwayY) * Math.min(1, dt * 8);
+      var vmSp = Math.hypot(vmSrc.vx, vmSrc.vz);
+      vmSwayX += ((vmSp / 250) * Math.sin(vmBob) * 0.5 - vmSwayX) * Math.min(1, dt * 8);
+      vmSwayY += ((vmSp / 250) * Math.abs(Math.cos(vmBob)) * 0.55 - vmSwayY) * Math.min(1, dt * 8);
       vmRecoil.z += (0 - vmRecoil.z) * Math.min(1, dt * 12);
       vmRecoil.x += (0 - vmRecoil.x) * Math.min(1, dt * 10);
 
       var reloadOff = 0, reloadRot = 0;
-      if (player.reloadEnd > 0) {
-        var w = weaponOf(player);
-        var pr = 1 - (player.reloadEnd - time) / w.reloadTime;
+      if (vmSrc.reloadEnd > 0) {
+        var w = weaponOf(vmSrc);
+        var pr = 1 - (vmSrc.reloadEnd - time) / w.reloadTime;
         var s = Math.sin(Math.min(1, Math.max(0, pr)) * Math.PI);
         reloadOff = -s * 4.5; reloadRot = s * 0.9;
       }
@@ -1365,14 +1735,15 @@ var GAME = (function () {
 
   function setSpectateHidden(e) {
     if (spectateHidden === e) return;
-    if (spectateHidden && spectateHidden.model) spectateHidden.model.group.visible = !spectateHidden.dead ? true : spectateHidden.model.group.visible;
+    /* 恢复上一个观战目标（无论死活） */
+    if (spectateHidden && spectateHidden.model) spectateHidden.model.group.visible = true;
     spectateHidden = e;
     if (e && e.model) e.model.group.visible = false;
   }
 
   /* 恢复所有被隐藏的模型（回合开始 / 复活时调用） */
   function clearSpectateHidden() {
-    if (spectateHidden && spectateHidden.model && !spectateHidden.dead) spectateHidden.model.group.visible = true;
+    if (spectateHidden && spectateHidden.model) spectateHidden.model.group.visible = true;
     spectateHidden = null;
   }
 
@@ -1394,7 +1765,7 @@ var GAME = (function () {
     el.classList.remove('hidden');
     var who = spectate && !spectate.dead ? spectate.name : null;
     el.innerHTML = who
-      ? '你已阵亡<small>观战：' + esc(who) + '　[左键 / 空格] 切换视角</small>'
+      ? '你已阵亡<small>观战：' + esc(who) + '　[左键 / 空格 / 点击屏幕] 切换视角</small>'
       : '你已阵亡<small>等待本回合结束…</small>';
   }
 
@@ -1629,10 +2000,11 @@ var GAME = (function () {
    * ================================================================ */
   function cacheHud() {
     ['hp', 'armor', 'ammoCur', 'ammoRes', 'wname', 'roundTime', 'scoreT', 'scoreCT',
-      'aliveT', 'aliveCT', 'killfeed', 'hitmarker', 'crosshair', 'locname', 'bombhud',
+      'aliveT', 'aliveCT', 'killfeed', 'radiofeed', 'hitmarker', 'crosshair', 'locname', 'bombhud',
       'bombtime', 'banner', 'scoreboard', 'pause', 'deadmsg', 'flash', 'scope',
       'sbBody', 'dmgdir', 'money', 'moneypop', 'kititems', 'buyhint', 'nadeicons',
-      'flashblind', 'progressWrap', 'progress', 'progressLabel'].forEach(function (id) {
+      'flashblind', 'progressWrap', 'progress', 'progressLabel',
+      'playerNameDisplay', 'btnRename'].forEach(function (id) {
         hud[id] = document.getElementById(id);
       });
   }
@@ -1645,11 +2017,22 @@ var GAME = (function () {
     clearTimeout(moneyPop._t);
     moneyPop._t = setTimeout(function () { hud.moneypop.style.opacity = 0; }, 1400);
   }
+  /* 更新玩家名字显示 */
+  function updatePlayerNameDisplay() {
+    if (!player) return;
+    if (hud.playerNameDisplay) {
+      hud.playerNameDisplay.textContent = player.name;
+      hud.playerNameDisplay.style.color = player.team === 'T' ? '#ffb44a' : '#6fa8ff';
+    }
+  }
   /* 回合结算提示（跟主横幅错开显示） */
   function banner2(text) { moneyPop(text); }
 
   function updateHud() {
     if (!player) return;
+    updatePlayerNameDisplay();
+    if (hud.btnRename && started) hud.btnRename.style.display = 'inline';
+    else if (hud.btnRename) hud.btnRename.style.display = 'none';
     hud.hp.textContent = Math.max(0, player.health);
     hud.armor.textContent = Math.max(0, Math.round(player.armor));
     hud.armor.parentNode.style.opacity = player.armor > 0 ? 1 : 0.35;
@@ -1754,6 +2137,54 @@ var GAME = (function () {
   }
   function esc(s) { return String(s).replace(/[<>&]/g, function (c) { return { '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]; }); }
 
+  /* ---------------- 战术语音（左侧播报，最多同时 4 条） ----------------
+   * 内容全部来自真实状态：buyPhase 记录的购买清单、carrier/defendSite 的实际去向。 */
+  function addRadio(name, team, text) {
+    var feed = hud.radiofeed;
+    if (!feed) return;
+    var row = document.createElement('div');
+    row.className = 'rrow';
+    row.innerHTML = '<span class="rn" style="color:' + (team === 'T' ? '#ffb44a' : '#6fa8ff') + '">' +
+      esc(name) + '</span>: &quot;' + esc(text) + '&quot;';
+    feed.appendChild(row);
+    while (feed.children.length > 4) feed.removeChild(feed.firstChild);
+    setTimeout(function () {
+      row.style.opacity = 0;
+      setTimeout(function () { if (row.parentNode) row.parentNode.removeChild(row); }, 700);
+    }, 6500);
+  }
+
+  /* 回合开场：从真实状态里抽最多 4 条播出（购买 / 去向），间隔错开。
+   * 无线电分队：只播玩家自己队伍的通讯，敌方通话听不到。 */
+  function roundStartRadio() {
+    if (SET.gameMode === 'teamdm') return;
+    var myTeam = player ? player.team : SET.team;
+    var pool = [];
+    var siteName = targetSite ? targetSite.name : 'A';
+    for (var i = 0; i < bots.length; i++) {
+      var b = bots[i];
+      if (b.dead || b.team !== myTeam) continue;
+      if (b.bought && b.bought.length) {
+        pool.push({ n: b.name, t: b.team, m: '已购买 ' + b.bought.slice(0, 2).join('、') });
+      }
+      if (b.team === 'T') {
+        if (carrier === b) pool.push({ n: b.name, t: b.team, m: '携带C4前往' + siteName + '区' });
+        else if (Math.random() < 0.5) pool.push({ n: b.name, t: b.team, m: '正在前往' + siteName + '区' });
+      } else {
+        if (Math.random() < 0.6) {
+          pool.push({ n: b.name, t: b.team, m: '前往' + (b.defendSite ? b.defendSite.name : 'A') + '区布防' });
+        }
+      }
+    }
+    shuffle(pool);
+    var count = Math.min(4, pool.length);
+    for (var k = 0; k < count; k++) {
+      (function (item, delay) {
+        setTimeout(function () { if (running) addRadio(item.n, item.t, item.m); }, delay);
+      })(pool[k], 1100 + k * 450);
+    }
+  }
+
   function showHitmarker() {
     hud.hitmarker.style.opacity = 1;
     clearTimeout(showHitmarker._t);
@@ -1808,27 +2239,82 @@ var GAME = (function () {
     hud.sbBody.innerHTML = html;
   }
 
+  /* ---------------- 友军头顶名字 ----------------
+   *  只给同阵营单位（bot + 联机队友）显示；
+   *  近距离完全显示，越远越透明，超过距离后隐藏。
+   * ================================================================ */
+  var nameplates = new Map();   // 实体 → { sprite }
+  var NAMEPLATE_NEAR = 500;     // 此距离内完全不透明
+  var NAMEPLATE_FAR = 2400;     // 此距离之外完全隐藏
+
+  function makeNameplate(name) {
+    var cv = document.createElement('canvas');
+    cv.width = 256; cv.height = 64;
+    var x = cv.getContext('2d');
+    x.font = 'bold 28px "Microsoft YaHei", sans-serif';
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.lineWidth = 6; x.strokeStyle = 'rgba(0,0,0,.75)';
+    x.strokeText(name, 128, 32);
+    x.fillStyle = '#a8f0a8';
+    x.fillText(name, 128, 32);
+    var tex = new THREE.CanvasTexture(cv);
+    var mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false, opacity: 0 });
+    var sp = new THREE.Sprite(mat);
+    sp.scale.set(46, 11.5, 1);   // 小字号：不遮视野
+    sp.renderOrder = 5;
+    scene.add(sp);
+    return sp;
+  }
+
+  function disposeNameplate(p) {
+    scene.remove(p.sprite);
+    if (p.sprite.material.map) p.sprite.material.map.dispose();
+    p.sprite.material.dispose();
+  }
+
+  function updateNameplates() {
+    // 清理已离场单位的名字牌
+    nameplates.forEach(function (p, e) {
+      if (all.indexOf(e) < 0) { disposeNameplate(p); nameplates.delete(e); }
+    });
+    if (!player) return;
+    for (var i = 0; i < all.length; i++) {
+      var e = all[i];
+      if (e === player) continue;
+      if (e.team !== player.team) continue;          // 只显示友军
+      var p = nameplates.get(e);
+      if (!p) { p = { sprite: makeNameplate(e.name) }; nameplates.set(e, p); }
+      if (e.dead) { p.sprite.visible = false; continue; }
+      var headY = e.y + (e.crouch ? 52 : 86);
+      p.sprite.position.set(e.x, headY, e.z);
+      var d = Math.hypot(e.x - player.x, e.z - player.z);
+      var alpha = 1 - Math.max(0, (d - NAMEPLATE_NEAR) / (NAMEPLATE_FAR - NAMEPLATE_NEAR));
+      alpha = Math.max(0, Math.min(1, alpha));
+      p.sprite.material.opacity = alpha;
+      p.sprite.visible = alpha > 0.02;
+    }
+  }
+
   /* ---------------- 雷达 ---------------- */
   function initRadar() {
     var c = document.getElementById('radar');
     radarCtx = c.getContext('2d');
-    // 预烘焙地图底图
-    var N = MAP.N;
+    var M = getMapModule();
+    var N = M.N;
     radarBase = document.createElement('canvas');
     radarBase.width = radarBase.height = N;
     var x = radarBase.getContext('2d');
     x.clearRect(0, 0, N, N);
     for (var j = 0; j < N; j++) for (var i = 0; i < N; i++) {
-      if (MAP.walk[MAP.idx(i, j)]) {
+      if (M.walk[M.idx(i, j)]) {
         x.fillStyle = 'rgba(120,190,255,.30)';
         x.fillRect(i, j, 1, 1);
       }
     }
-    // 包点标记
-    for (var s = 0; s < MAP.SITES.length; s++) {
-      var S = MAP.SITES[s];
+    for (var s = 0; s < M.SITES.length; s++) {
+      var S = M.SITES[s];
       x.fillStyle = 'rgba(255,90,60,.5)';
-      x.fillRect(MAP.cx(S.x) - 3, MAP.cz(S.z) - 3, 6, 6);
+      x.fillRect(M.cx(S.x) - 3, M.cz(S.z) - 3, 6, 6);
     }
   }
 
@@ -1843,50 +2329,103 @@ var GAME = (function () {
 
     var src = (player.dead && spectate && !spectate.dead) ? spectate : player;
     ctxr.translate(half, half);
-    // 让自己的朝向朝上：canvas 的 y 轴朝下，世界 -Z 已经是屏幕上方，
-    // 所以需要顺时针转 +yaw（原来写的 -yaw+PI 会让整张地图上下颠倒且左右镜像，
-    // 转身时地图往反方向转 —— 这是「A/D 感觉是反的」的元凶）
     ctxr.rotate(src.yaw);
-    // 底图
-    var px = (src.x - MAP.ORIGIN) / MAP.GRID, pz = (src.z - MAP.ORIGIN) / MAP.GRID;
-    var k = MAP.GRID * scale;
+    var M = getMapModule();
+    var px = (src.x - M.ORIGIN) / M.GRID, pz = (src.z - M.ORIGIN) / M.GRID;
+    var k = M.GRID * scale;
     ctxr.imageSmoothingEnabled = false;
-    ctxr.drawImage(radarBase, -px * k, -pz * k, MAP.N * k, MAP.N * k);
+    ctxr.drawImage(radarBase, -px * k, -pz * k, M.N * k, M.N * k);
 
     function dot(e, color, r) {
       var dx = (e.x - src.x) * scale, dz = (e.z - src.z) * scale;
       ctxr.fillStyle = color;
       ctxr.beginPath(); ctxr.arc(dx, dz, r, 0, 6.283); ctxr.fill();
     }
-    // 队友
     var mates = src.team === 'T' ? tList : ctList;
     for (var i = 0; i < mates.length; i++) {
       if (mates[i].dead || mates[i] === src) continue;
       dot(mates[i], '#6ee36e', 3);
     }
-    // 敌人（仅可见的，烟雾里的看不到）
     var foes = src.team === 'T' ? ctList : tList;
     for (i = 0; i < foes.length; i++) {
       var f = foes[i];
       if (f.dead) continue;
       var sx = src.x, sy = eyeY(src), sz = src.z;
-      var seen = !MAP.losBlocked(sx, sy, sz, f.x, f.y + 50, f.z) &&
+      var seen = !M.losBlocked(sx, sy, sz, f.x, f.y + 50, f.z) &&
         !NADE.blocked(sx, sy, sz, f.x, f.y + 50, f.z);
       var dist = Math.hypot(f.x - src.x, f.z - src.z);
       if (seen && dist < 3000) dot(f, '#ff5a4a', 3.2);
     }
-    // 炸弹
     if (bomb.planted) {
       var blink = (Math.floor(time * 4) % 2) === 0;
       dot({ x: bomb.pos[0], z: bomb.pos[1] }, blink ? '#ffd24a' : '#ff7a20', 4);
     }
     ctxr.restore();
-    // 自己
     ctxr.fillStyle = '#ffffff';
     ctxr.beginPath();
     ctxr.moveTo(half, half - 5); ctxr.lineTo(half - 4, half + 4); ctxr.lineTo(half + 4, half + 4);
     ctxr.closePath(); ctxr.fill();
   }
+
+  /* 放大地图（M 键 / 手机按钮切换） */
+  var bigMapOpen = false;
+  function toggleBigMap() {
+    if (!started) return;
+    var el = document.getElementById('bigmap');
+    if (!el) return;
+    bigMapOpen = !bigMapOpen;
+    el.classList.toggle('show', bigMapOpen);
+    if (bigMapOpen) { renderBigMap(); }
+  }
+  function renderBigMap() {
+    var cv = document.getElementById('bigmapCanvas');
+    if (!cv || !radarBase) return;
+    var ctx2 = cv.getContext('2d');
+    var S = cv.width;                       // 600
+    ctx2.clearRect(0, 0, S, S);
+    ctx2.save();
+    ctx2.beginPath(); ctx2.arc(S/2, S/2, S/2 - 2, 0, 6.283); ctx2.clip();
+    ctx2.fillStyle = 'rgba(6,12,18,.72)';
+    ctx2.fillRect(0, 0, S, S);
+    var src = (player.dead && spectate && !spectate.dead) ? spectate : player;
+    ctx2.translate(S/2, S/2);
+    ctx2.rotate(src.yaw);
+    var scale = 0.052 * (S / 190);          // 放大到 canvas 尺寸
+    var M = getMapModule();
+    var px = (src.x - M.ORIGIN) / M.GRID, pz = (src.z - M.ORIGIN) / M.GRID;
+    var k = M.GRID * scale;
+    ctx2.imageSmoothingEnabled = false;
+    ctx2.drawImage(radarBase, -px * k, -pz * k, M.N * k, M.N * k);
+    function dot(e, color, r) {
+      var dx = (e.x - src.x) * scale, dz = (e.z - src.z) * scale;
+      ctx2.fillStyle = color; ctx2.beginPath(); ctx2.arc(dx, dz, r, 0, 6.283); ctx2.fill();
+    }
+    var mates = src.team === 'T' ? tList : ctList;
+    for (var i = 0; i < mates.length; i++) {
+      if (mates[i].dead || mates[i] === src) continue;
+      dot(mates[i], '#6ee36e', 5);
+    }
+    var foes = src.team === 'T' ? ctList : tList;
+    for (i = 0; i < foes.length; i++) {
+      var f = foes[i];
+      if (f.dead) continue;
+      var sx = src.x, sy = eyeY(src), sz = src.z;
+      var seen = !M.losBlocked(sx, sy, sz, f.x, f.y + 50, f.z) &&
+        !NADE.blocked(sx, sy, sz, f.x, f.y + 50, f.z);
+      var dist = Math.hypot(f.x - src.x, f.z - src.z);
+      if (seen && dist < 3000) dot(f, '#ff5a4a', 5.5);
+    }
+    if (bomb.planted) {
+      var blink = (Math.floor(time * 4) % 2) === 0;
+      dot({ x: bomb.pos[0], z: bomb.pos[1] }, blink ? '#ffd24a' : '#ff7a20', 6);
+    }
+    ctx2.restore();
+    ctx2.fillStyle = '#ffffff';
+    ctx2.beginPath();
+    ctx2.moveTo(S/2, S/2 - 8); ctx2.lineTo(S/2 - 6, S/2 + 6); ctx2.lineTo(S/2 + 6, S/2 + 6);
+    ctx2.closePath(); ctx2.fill();
+  }
+  function bigMapEsc() { if (bigMapOpen) toggleBigMap(); }
 
   /* ================================================================
    *  菜单 / UI 绑定
@@ -1895,6 +2434,7 @@ var GAME = (function () {
     function onQuit() {
       SFX.uiClick();
       running = false; started = false; paused = false;
+      resetMatchHud();   // 返回菜单也把上一局的瞬时状态清掉（死亡提示 / 白屏 / 手雷 / 尸体）
       document.getElementById('pause').classList.add('hidden');
       document.getElementById('hud').classList.add('hidden');
       if (netMode) {
@@ -1914,6 +2454,7 @@ var GAME = (function () {
       SFX.uiClick();
       if (netMode) {
         // 联机对局下回到大厅，让房主重建
+        resetMatchHud();
         if (typeof LobbyApp !== 'undefined') LobbyApp.showLobby();
         netStop();
       } else {
@@ -1924,6 +2465,10 @@ var GAME = (function () {
       SFX.uiClick();
       onQuit();
     });
+
+    // 放大地图：点击关闭
+    var bm = document.getElementById('bigmap');
+    if (bm) bm.addEventListener('click', function () { if (bigMapOpen) toggleBigMap(); });
 
     // 选项按钮组
     document.querySelectorAll('.optrow').forEach(function (row) {
@@ -1939,6 +2484,21 @@ var GAME = (function () {
         if (key === 'team') SET.team = val;
         if (key === 'maxScore') SET.maxScore = parseInt(val, 10);
         if (key === 'invertStrafe') SET.invertStrafe = (val === 'true');
+        if (key === 'gameMode') {
+          SET.gameMode = val;
+          var show = val === 'teamdm';
+          var rl = document.getElementById('rowLives');
+          var rlo = document.getElementById('rowLoadout');
+          var note = document.getElementById('menuNote');
+          var noteT = document.getElementById('menuNoteTeam');
+          if (rl) rl.style.display = show ? '' : 'none';
+          if (rlo) rlo.style.display = show ? '' : 'none';
+          if (note) note.classList.toggle('hidden', show);
+          if (noteT) noteT.classList.toggle('hidden', !show);
+        }
+        if (key === 'map') SET.map = val;
+        if (key === 'lives') SET.lives = parseInt(val, 10);
+        if (key === 'loadout') SET.loadout = val;
         saveSettings();
       });
     });
@@ -1946,6 +2506,22 @@ var GAME = (function () {
     bindSlider('sens', 'sens', function (v) { SET.sens = v; }, 1);
     bindSlider('fov', 'fov', function (v) { SET.fov = v; if (camera && !scoped) { camera.fov = v; camera.updateProjectionMatrix(); } }, 0);
     bindSlider('vol', 'volume', function (v) { SET.volume = v; SFX.setVolume(v); }, 2);
+
+    // 改名按钮
+    var btnRename = document.getElementById('btnRename');
+    if (btnRename) {
+      btnRename.addEventListener('click', function () {
+        var newName = prompt('输入新名字:', player ? player.name : '');
+        if (newName === null) return;
+        newName = newName.trim();
+        if (!newName) return;
+        if (player) {
+          player.name = newName;
+          updatePlayerNameDisplay();
+          updateHud();
+        }
+      });
+    }
   }
 
   function bindSlider(id, key, apply, digits) {
@@ -1973,12 +2549,27 @@ var GAME = (function () {
     if ((s = document.getElementById('sl_sens'))) { s.value = SET.sens; document.getElementById('lb_sens').textContent = SET.sens.toFixed(1); }
     if ((s = document.getElementById('sl_fov'))) { s.value = SET.fov; document.getElementById('lb_fov').textContent = SET.fov.toFixed(0); }
     if ((s = document.getElementById('sl_vol'))) { s.value = SET.volume; document.getElementById('lb_vol').textContent = SET.volume.toFixed(2); }
+    // 隐藏/显示团队竞技专属选项行
+    var isDM = SET.gameMode === 'teamdm';
+    var rl = document.getElementById('rowLives');
+    var rlo = document.getElementById('rowLoadout');
+    var note = document.getElementById('menuNote');
+    var noteT = document.getElementById('menuNoteTeam');
+    if (rl) rl.style.display = isDM ? '' : 'none';
+    if (rlo) rlo.style.display = isDM ? '' : 'none';
+    if (note) note.classList.toggle('hidden', isDM);
+    if (noteT) noteT.classList.toggle('hidden', !isDM);
   }
 
   function togglePause(force) {
     if (!started || matchOver) return;
     paused = force === undefined ? !paused : force;
     document.getElementById('pause').classList.toggle('hidden', !paused);
+    // 联机中暂停不会冻结世界，提示语也要如实告知
+    var pt = document.querySelector('#pause .title');
+    var ps = document.querySelector('#pause .sub');
+    if (pt) pt.textContent = paused ? (netMode ? '菜 单' : '已 暂 停') : '已 暂 停';
+    if (ps) ps.textContent = paused ? (netMode ? '联机中 · 游戏不会暂停' : '鼠标已释放') : '鼠标已释放';
     if (paused) releaseLock(); else requestLock();
   }
 
@@ -1990,7 +2581,8 @@ var GAME = (function () {
     var dt = Math.min(0.05, (now - clock) / 1000);
     clock = now;
     if (!started) { renderer.clear(); return; }
-    if (!paused && running) {
+    // 联机模式下暂停只是本地菜单：世界（房主模拟/网络同步）必须继续流动
+    if (running && (!paused || netMode)) {
       time += dt;
       step(dt);
     }
@@ -1998,8 +2590,30 @@ var GAME = (function () {
   }
 
   function step(dt) {
-    // 联机客户端不跑权威模拟：回合阶段、时钟、炸弹倒计时、bot AI 全部由房主下发
     var auth = netAuthoritative();
+    // ========== 团队竞技模式 ==========
+    if (SET.gameMode === 'teamdm') {
+      if (teamDmRespawning) {
+        teamDmRespawnTimer -= dt;
+        if (teamDmRespawnTimer <= 0) { teamDmRespawning = false; teamDMRespawn(player); }
+      }
+      NAV.beginFrame();
+      updatePlayer(dt);
+      if (auth) { for (var i = 0; i < bots.length; i++) bots[i].update(dt, API); }
+      PHYS.separate(all);
+      effects.update(dt);
+      NADE.update(dt, effects);
+      if (netMode) netUpdate(dt);
+      updateBlind(dt);
+      updateCamera(dt);
+      updateClockHud(dt);
+      updateNameplates();
+      drawRadar();
+      if (bigMapOpen) renderBigMap();
+      if (!hud.scoreboard.classList.contains('hidden')) { sbTimer -= dt; if (sbTimer <= 0) { sbTimer = 0.3; showScoreboard(true); } }
+      return;
+    }
+    // ========== 爆破模式（原有逻辑） ==========
     // 回合阶段
     if (auth && phase === 'freeze') {
       phaseT -= dt;
@@ -2051,7 +2665,9 @@ var GAME = (function () {
     updateBlind(dt);
     updateCamera(dt);
     updateClockHud(dt);
+    updateNameplates();
     drawRadar();
+    if (bigMapOpen) renderBigMap();
     if (!hud.scoreboard.classList.contains('hidden')) {
       sbTimer -= dt;
       if (sbTimer <= 0) { sbTimer = 0.3; showScoreboard(true); }
@@ -2059,9 +2675,18 @@ var GAME = (function () {
   }
 
   function render() {
+    /* 兜底：活着的 bot 模型被意外隐藏（观战残留 / 状态切换竞态）时强制恢复。
+     * 例外：spectateHidden 是「正在观战此人」而故意隐藏的（否则他的身体和枪
+     * 糊在镜头上），必须跳过，否则观战视角会冒出被观战者的建模。 */
+    for (var i = 0; i < bots.length; i++) {
+      var b = bots[i];
+      if (!b.dead && b !== spectateHidden && b.model && !b.model.group.visible) b.model.group.visible = true;
+    }
     renderer.clear();
     renderer.render(scene, camera);
-    if (vm && vm.root.visible && !player.dead) {
+    // 观战时也渲染武器模型
+    var showVm = vm && vm.root.visible && (!player.dead || (!!spectate && !spectate.dead));
+    if (showVm) {
       renderer.clearDepth();
       renderer.render(vmScene, vmCam);
     }
@@ -2161,16 +2786,16 @@ var GAME = (function () {
     transport.onMessage(netOnMessage);
     transport.onPeer(function (ev) {
       if (ev.type === 'join') {
-        netT.send({ t: NET.P.EV.HELLO, v: NET.P.VERSION, team: player.team, name: player.name, host: netIsHost() }, ev.id);
+        netT.send({ t: NET.P.EV.HELLO, v: NET.P.VERSION, team: (player ? player.team : 'CT'), name: (player ? player.name : 'Player'), host: netIsHost() }, ev.id);
         netPing(ev.id);
       } else if (ev.type === 'leave') {
         netRemoveRemote(ev.id);
       }
     });
-    // 已经在房里的人也要打个招呼
+    // 已经在房里的人也要打个招呼（注意：netStart 时 player 可能还没创建，不能直接读）
     var ps = transport.peers();
     for (var i = 0; i < ps.length; i++) {
-      netT.send({ t: NET.P.EV.HELLO, v: NET.P.VERSION, team: player.team, name: player.name, host: netIsHost() }, ps[i].id);
+      netT.send({ t: NET.P.EV.HELLO, v: NET.P.VERSION, team: (player ? player.team : 'CT'), name: (player ? player.name : 'Player'), host: netIsHost() }, ps[i].id);
       netPing(ps[i].id);
     }
     banner(netIsHost() ? '联机对局（房主）' : '联机对局（客户端）', 2.2, '#8fdc6a');
@@ -2198,20 +2823,51 @@ var GAME = (function () {
 
   /* ---------------- 联机对局：从大厅进入比赛 ---------------- */
   function startOnlineMatch() {
+    var backToMenu = function (msg) {
+      // 开局失败绝不能停在蓝屏：恢复所有界面并回主菜单
+      started = false; running = false; paused = false;
+      netStop();
+      if (typeof LobbyApp !== 'undefined') LobbyApp.showMenu();
+      if (msg) alert(msg);
+    };
     try {
-      var transport = VIBE.getTransport();
+      // 取当前传输层；兼容缓存了旧 vibe.js 的浏览器（无 getTransport 时现场创建）
+      var transport = (typeof VIBE.getTransport === 'function') ? VIBE.getTransport() : null;
+      if (!transport && typeof VIBE.getRoom === 'function' && typeof VIBE.createTransport === 'function') {
+        var room0 = VIBE.getRoom();
+        if (room0) transport = VIBE.createTransport(room0);
+      }
       if (!transport) {
-        alert('传输层未就绪：请从大厅创建或加入房间');
+        backToMenu('传输层未就绪：请从大厅创建或加入房间');
         return false;
       }
-      // 把 lobby/overlay 关了，露出游戏画面
+      // 加入方：从房间元数据应用房主的设置（地图/模式/人数/胜利条件/阵营）
+      var meta = (typeof VIBE.getRoomMeta === 'function') ? VIBE.getRoomMeta() : null;
+      if (meta) {
+        if (meta.map) SET.map = meta.map;
+        if (meta.gameMode) SET.gameMode = meta.gameMode;
+        if (meta.teamSize) SET.teamSize = Math.max(2, Math.min(10, parseInt(meta.teamSize, 10) || SET.teamSize));
+        if (meta.playerSize) SET.playerSize = Math.max(1, Math.min(4, parseInt(meta.playerSize, 10) || SET.playerSize));
+        if (SET.gameMode === 'teamdm') { if (meta.win) SET.lives = parseInt(meta.win, 10) || SET.lives; }
+        else { if (meta.win) SET.maxScore = parseInt(meta.win, 10) || SET.maxScore; }
+        // 阵营：房主用自己选的阵营，加入方自动取对方阵营
+        if (meta.hostTeam === 'T' || meta.hostTeam === 'CT') {
+          SET.team = transport.isHost ? meta.hostTeam : (meta.hostTeam === 'T' ? 'CT' : 'T');
+        }
+      }
       if (typeof LobbyApp !== 'undefined') LobbyApp.hideAllOverlays();
       netStart(transport);
-      initRound();
+      try {
+        startMatch();   // 按房间设置（爆破/团队竞技 + 对应地图）开局
+      } catch (me) {
+        console.error(me);
+        backToMenu('开局失败：' + me.message);
+        return false;
+      }
       return true;
     } catch (e) {
-      alert('启动联机对局失败: ' + e.message);
       console.error(e);
+      backToMenu('启动联机对局失败: ' + e.message);
       return false;
     }
   }
@@ -2634,7 +3290,7 @@ var GAME = (function () {
     score.T = msg.sc[0]; score.CT = msg.sc[1];
     lossStreak.T = msg.ls[0]; lossStreak.CT = msg.ls[1];
     if (msg.site) {
-      for (var s = 0; s < MAP.SITES.length; s++) if (MAP.SITES[s].name === msg.site) targetSite = MAP.SITES[s];
+      for (var s = 0; s < getMapModule().SITES.length; s++) if (getMapModule().SITES[s].name === msg.site) targetSite = getMapModule().SITES[s];
     }
     // C4
     if (msg.bomb) {
@@ -2710,7 +3366,7 @@ var GAME = (function () {
     // 购买窗口：freeze 阶段，或 live 阶段且剩余时间 > roundTime - 20
     var inTime = phase === 'freeze' || (phase === 'live' && roundClock > SET.roundTime - MONEY.buyTime);
     if (!inTime) return deny('购买时间已过');
-    if (!MAP.inBuyZone(e.team, e.x, e.z)) return deny('必须回到自家出生区');
+    if (!getMapModule().inBuyZone(e.team, e.x, e.z)) return deny('必须回到自家出生区');
     var price = WEAPONS.priceOf(item);
     if ((e.money || 0) < price) return deny('钱不够（需要 $' + price + '）');
     // 批准：扣钱。注意 e 是 netRemotes 里的同一个对象，所以 netRemoteMoney 立刻能读到新值
@@ -2738,7 +3394,7 @@ var GAME = (function () {
       if (!netRemoteHold.get(id) || e.dead) { e.plantT = 0; e.defuseT = 0; return; }
       var moving = Math.hypot(e.vx || 0, e.vz || 0) > 40;
       if (e.team === 'T' && !bomb.planted && carrier === e) {
-        var site = MAP.siteAt(e.x, e.z);
+        var site = getMapModule().siteAt(e.x, e.z);
         if (site && !moving) {
           e.plantT = (e.plantT || 0) + dt;
           plantProgress = Math.min(1, e.plantT / 3.0);
@@ -2762,7 +3418,7 @@ var GAME = (function () {
     var spawns = {};
     var taken = [];
     netRemotes.forEach(function (e, id) {
-      var list = MAP.SPAWNS[e.team].slice();
+      var list = getMapModule().SPAWNS[e.team].slice();
       shuffle(list);
       var pos = placeEntity(e, list[0], taken);
       e.x = pos[0]; e.y = pos[1]; e.z = pos[2];
@@ -2876,6 +3532,7 @@ var GAME = (function () {
     get bombPos() { return bomb.pos; },
     get carrier() { return carrier; },
     get targetSite() { return targetSite; },
+    get gameMode() { return SET.gameMode; },
     get defuseProgress() { return botDefuse; },
     set defuseProgress(v) { botDefuse = v; },
     plantBomb: plantBomb,
@@ -2928,7 +3585,65 @@ var GAME = (function () {
     };
   }
 
-  var out = { init: init, API: API, SET: SET, debug: debugSnapshot, startOnlineMatch: startOnlineMatch };
+  /* 供 touch.js 使用的接口（不直接暴露内部私有变量，只暴露安全的读写函数） */
+  var touchApi = {
+    setKey: function (code, down) { keys[code] = !!down; },
+    setFire: function (down) { mouse.down = !!down; },
+    isActive: function () { return started && running && !paused; },
+    hasLivePlayer: function () { return !!(player && !player.dead); },
+    applyLook: function (dx, dy) {
+      if (!player || player.dead) return;
+      var s = SET.sens * 0.00022 * (scoped ? 0.35 : 1);
+      player.yaw -= dx * s;
+      player.pitch -= dy * s;
+      var lim = Math.PI / 2 - 0.02;
+      player.pitch = Math.max(-lim, Math.min(lim, player.pitch));
+    },
+    applyGyroLook: function (dPitch, dYaw) {
+      if (!player || player.dead) return;
+      player.pitch -= dPitch;
+      player.yaw -= dYaw;
+      var lim = Math.PI / 2 - 0.02;
+      player.pitch = Math.max(-lim, Math.min(lim, player.pitch));
+    },
+    toggleScope: function () {
+      if (player && !player.dead && weaponOf(player).scope) { scoped = !scoped; setScope(scoped); }
+    },
+    hasScope: function () { return !!(player && !player.dead && weaponOf(player) && weaponOf(player).scope); },
+    reload: function () { if (player && !player.dead) startReload(); },
+    jump: function () { if (player && !player.dead && !paused && PHYS.jump(player)) SFX.jump(0); },
+    /* 快速切刀：切到匕首 → 挥一刀 → 550ms 后自动换回原武器 */
+    quickKnife: function () {
+      if (!player || player.dead || paused || phase === 'freeze') return;
+      var ki = slotIndex(player, 'knife');
+      if (ki < 0) return;
+      if (player.wi === ki) {                     // 已经拿着刀：直接挥
+        var wk = weaponOf(player);
+        if (time >= player.nextFire) { player.nextFire = time + 60 / wk.rpm; meleeAttack(player, wk); vmRecoil.z = -3; }
+        return;
+      }
+      var prev = player.wi;
+      switchWeapon(ki);
+      var w = weaponOf(player);
+      player.nextFire = time + 60 / w.rpm;         // 越过切枪延迟，立即挥这一刀
+      meleeAttack(player, w);
+      vmRecoil.z = -3; vmRecoil.x = -0.1;
+      setTimeout(function () {
+        if (player && !player.dead && player.wi === ki) switchWeapon(prev);
+      }, 550);
+    },
+    selectSlot: function (slot, gid) { if (player && !player.dead) selectSlot(slot, gid); },
+    buyKey: function (code) { return typeof BUYMENU !== 'undefined' ? BUYMENU.key(code) : false; },
+    toggleMap: function () { toggleBigMap(); },
+    nextSpectate: function () { if (player && player.dead) { nextSpectate(1); updateSpectateHud(); } },
+    isDead: function () { return !!(player && player.dead); },
+    setFov: function (v) { SET.fov = v; if (camera && !scoped) { camera.fov = v; camera.updateProjectionMatrix(); } },
+    setSens: function (v) { SET.sens = v; },
+    setVolume: function (v) { SET.volume = v; if (typeof SFX !== 'undefined') SFX.setVolume(v); },
+    saveSettings: function () { saveSettings(); }
+  };
+
+  var out = { init: init, API: API, SET: SET, debug: debugSnapshot, startOnlineMatch: startOnlineMatch, touch: touchApi };
 
   // 只有带 ?selftest 参数时才挂出可以改动状态的钩子，避免变成作弊接口
   if (/selftest/.test(location.search)) {
@@ -3067,7 +3782,7 @@ var GAME = (function () {
         if (!player || !WEAPONS.defs[id]) return false;
         var list = [id].concat(player.weapons.filter(function (w) { return w !== id; }));
         giveLoadout(player, list);
-        setViewModel(player.weapons[0]);
+        setViewModel(player.weapons[0], player.team);
         updateHud();
         return true;
       },
@@ -3075,12 +3790,12 @@ var GAME = (function () {
       spawnProbeCheck: function () {
         // 所有出生点经 safeSpawn 处理后是否都不再和地图几何相撞
         var bad = [];
-        for (var team in MAP.SPAWNS) {
-          var list = MAP.SPAWNS[team];
+        for (var team in getMapModule().SPAWNS) {
+          var list = getMapModule().SPAWNS[team];
           for (var i = 0; i < list.length; i++) {
             var taken = [];
             var probe = makeSpawnProbe(taken);
-            var p = MAP.safeSpawn(list[i][0], list[i][1], probe);
+            var p = getMapModule().safeSpawn(list[i][0], list[i][1], probe);
             if (probe(p[0], p[1])) bad.push({ team: team, from: list[i], to: p });
           }
         }
